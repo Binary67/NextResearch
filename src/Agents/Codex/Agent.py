@@ -30,6 +30,10 @@ class CodexAgent:
         self._pending_messages: deque[dict[str, Any]] = deque()
         self._thread_id: str | None = None
 
+    @property
+    def thread_id(self) -> str | None:
+        return self._thread_id
+
     def start(self) -> None:
         if self._process is not None and self._process.poll() is None:
             return
@@ -76,10 +80,22 @@ class CodexAgent:
             },
         )
 
-        try:
-            self._thread_id = result["thread"]["id"]
-        except (KeyError, TypeError) as exc:
-            raise CodexAgentError("Codex app-server returned an invalid thread/start response.") from exc
+        self._thread_id = self._extract_thread_id_from_session_result(result, "thread/start")
+
+    def resume_session(self, thread_id: str) -> None:
+        if not thread_id or not thread_id.strip():
+            raise ValueError("thread_id must be a non-empty string.")
+
+        self.start()
+
+        if self._thread_id == thread_id:
+            return
+
+        if self._thread_id is not None:
+            self.end_session()
+
+        result = self._request("thread/resume", {"threadId": thread_id})
+        self._thread_id = self._extract_thread_id_from_session_result(result, "thread/resume")
 
     def end_session(self) -> None:
         if self._thread_id is None:
@@ -250,6 +266,12 @@ class CodexAgent:
             return result["turn"]["id"]
         except (KeyError, TypeError) as exc:
             raise CodexAgentError("Codex app-server returned an invalid turn/start response.") from exc
+
+    def _extract_thread_id_from_session_result(self, result: dict[str, Any], operation: str) -> str:
+        try:
+            return result["thread"]["id"]
+        except (KeyError, TypeError) as exc:
+            raise CodexAgentError(f"Codex app-server returned an invalid {operation} response.") from exc
 
     def _normalize_cwd(self, cwd: str | None) -> str | None:
         if cwd is None:
