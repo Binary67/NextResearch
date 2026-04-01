@@ -162,7 +162,6 @@ class CodexAgent:
         self._next_request_id = 1
         self._pending_messages: deque[dict[str, Any]] = deque()
         self._thread_id: str | None = None
-        self._session_cwd: str | None = None
 
     @property
     def thread_id(self) -> str | None:
@@ -221,24 +220,7 @@ class CodexAgent:
         )
 
         self._thread_id = self._extract_thread_id_from_session_result(result, "thread/start")
-        self._session_cwd = normalized_cwd
         self._session_log.append_session_started(self._thread_id, normalized_cwd)
-
-    def resume_session(self, thread_id: str) -> None:
-        if not thread_id or not thread_id.strip():
-            raise ValueError("thread_id must be a non-empty string.")
-
-        self.start()
-
-        if self._thread_id == thread_id:
-            return
-
-        if self._thread_id is not None:
-            self.end_session()
-
-        result = self._request("thread/resume", {"threadId": thread_id})
-        self._thread_id = self._extract_thread_id_from_session_result(result, "thread/resume")
-        self._session_log.append_session_resumed(self._thread_id, self._session_cwd)
 
     def end_session(self) -> None:
         if self._thread_id is None:
@@ -246,7 +228,6 @@ class CodexAgent:
 
         thread_id = self._thread_id
         self._thread_id = None
-        self._session_cwd = None
         self._request("thread/unsubscribe", {"threadId": thread_id})
 
     def run_instruction(self, instruction: str) -> str:
@@ -273,7 +254,6 @@ class CodexAgent:
         self._process = None
         self._pending_messages.clear()
         self._thread_id = None
-        self._session_cwd = None
 
         if process.poll() is None:
             process.terminate()

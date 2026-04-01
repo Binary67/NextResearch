@@ -1,48 +1,40 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from src.Orchestration import PrepareContextRequest, PrepareContextWorkflow, PrepareContextResult
+from src.Agents.Codex import CodexAgent
 
 
-DEFAULT_OBJECTIVE = (
-    "Understand the current repository structure and identify the main areas relevant to "
-    "future experiment orchestration work."
+EXPLORE_TURN = (
+    "Explore the repository in the current working directory and identify the code paths most relevant "
+    "to improving the coding-agent workflow. Keep the answer concise and do not modify any files."
 )
 
-
-def run_prepare_context(
-    objective: str,
-    codebase_path: str,
-    workflow: PrepareContextWorkflow | None = None,
-) -> PrepareContextResult:
-    owned_workflow = workflow is None
-    active_workflow = workflow or PrepareContextWorkflow()
-
-    try:
-        return active_workflow.run(
-            PrepareContextRequest(
-                objective=objective,
-                codebase_path=codebase_path,
-            )
-        )
-    finally:
-        if owned_workflow:
-            active_workflow.close()
+PROPOSE_TURN = (
+    "Based on the repository exploration, propose one concrete improvement to the coding-agent workflow. "
+    "Explain why it is high leverage, keep the answer concise, and do not modify any files."
+)
 
 
 def main() -> None:
     project_root = Path(__file__).resolve().parent
-    result = run_prepare_context(
-        objective=DEFAULT_OBJECTIVE,
-        codebase_path=str(project_root),
-    )
+    agent = CodexAgent()
 
-    print(json.dumps(result.__dict__, indent=2))
+    try:
+        agent.start_session(str(project_root))
+        explore_response = agent.run_instruction(EXPLORE_TURN)
+        propose_response = agent.run_instruction(PROPOSE_TURN)
+        log_path = agent.session_log_path
+        agent.end_session()
+    finally:
+        agent.close()
 
-    if result.context_artifact_path:
-        print(Path(result.context_artifact_path).read_text(encoding="utf-8"))
+    print("Explore Turn:\n")
+    print(explore_response)
+    print("\nPropose Turn:\n")
+    print(propose_response)
+    if log_path is not None:
+        print(f"\nSession log: {log_path}")
 
 
 if __name__ == "__main__":

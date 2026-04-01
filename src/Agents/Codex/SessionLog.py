@@ -51,12 +51,6 @@ class CodexSessionLog:
             [self._single_line_section("Session Started", self._describe_session(cwd))],
         )
 
-    def append_session_resumed(self, thread_id: str, cwd: str | None) -> Path:
-        return self._append_sections(
-            self.path_for_thread(thread_id),
-            [self._single_line_section("Session Resumed", self._describe_session(cwd))],
-        )
-
     def append_turn(self, thread_id: str, turn: TurnLogEntry) -> Path:
         work_summary = f"Ran {len(turn.commands)} command(s). Changed {len(turn.file_changes)} file(s)."
         sections: list[tuple[str, str]] = [
