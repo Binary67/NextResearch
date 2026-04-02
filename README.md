@@ -63,7 +63,8 @@ The run configuration includes:
 - `iteration_count`
 - optional `evaluation_file_path`
 - optional `baseline_branch`
-- optional `prompt_template`
+
+Prompt wording is loaded from the top-level `PromptTemplates.md` file.
 
 ### Evaluation Contract
 
@@ -122,6 +123,16 @@ NextResearch writes runtime artifacts under `Logs/`:
   - human-readable Codex session logs
 - `Logs/Worktrees/`
   - temporary worktrees used during scoring and experiment runs
+
+## Prompt Templates
+
+Prompt templates for:
+
+- `RUNNING_INSTRUCTIONS.md` generation
+- `EVALUATION_SPEC.md` generation
+- experiment execution
+
+are stored in the top-level `PromptTemplates.md` file. The orchestrator reads the required prompt sections from that file and fails fast if a required section is missing or empty.
 
 ## Project Structure
 

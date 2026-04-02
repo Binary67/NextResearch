@@ -42,4 +42,3 @@ class ExperimentRunConfig:
     iteration_count: int
     evaluation_file_path: str | Path | None = None
     baseline_branch: str | None = None
-    prompt_template: str | None = None

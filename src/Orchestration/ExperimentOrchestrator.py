@@ -158,10 +158,7 @@ class ExperimentOrchestrator:
                 self._write_run_docs(docs_dir, bootstrap_artifacts)
                 session_result = self._run_codex_session(
                     run_cwd,
-                    self._build_experiment_prompt(
-                        objective_name=config.objective_name,
-                        prompt_template=config.prompt_template,
-                    ),
+                    self._build_experiment_prompt(objective_name=config.objective_name),
                 )
                 response_text = session_result.turn_result.response_text
                 session_log_path = session_result.session_log_path
@@ -306,68 +303,60 @@ class ExperimentOrchestrator:
         return _SessionRunResult(turn_result=turn_result, session_log_path=session_log_path)
 
     def _build_running_instructions_prompt(self) -> str:
-        return (
-            "Inspect the current codebase and produce the complete markdown for a file named "
-            "`RUNNING_INSTRUCTIONS.md`.\n\n"
-            "Requirements:\n"
-            "- Do not modify any files.\n"
-            "- Reply with the markdown document only. Do not wrap the entire response in a code fence.\n"
-            "- Focus on how a future Codex session should understand, run, and sanity-check this codebase.\n"
-            "- Include concrete commands when they can be inferred safely.\n"
-            "- Keep the document concise and practical.\n\n"
-            "The document must contain these sections:\n"
-            "# Running Instructions\n"
-            "## Overview\n"
-            "## Important Paths\n"
-            "## Setup And Execution\n"
-            "## Allowed Sanity Checks\n"
-            "## Constraints\n"
-        )
+        return self._load_prompt_template("Running Instructions Prompt")
 
     def _build_evaluation_spec_prompt(self, evaluation_command: str, evaluation_relative_path: str) -> str:
-        return (
-            "Read the evaluation entrypoint at "
-            f"`{evaluation_relative_path}` and produce the complete markdown for a file named "
-            "`EVALUATION_SPEC.md`.\n\n"
-            "Requirements:\n"
-            "- Do not modify any files.\n"
-            "- Reply with the markdown document only. Do not wrap the entire response in a code fence.\n"
-            "- Summarize only the public contract an optimizer needs.\n"
-            "- Do not reveal the exact scoring formula or exploitable implementation details.\n"
-            f"- Mention that the orchestrator will run the evaluation command `{evaluation_command}`.\n\n"
-            "The document must contain these sections:\n"
-            "# Evaluation Spec\n"
-            "## Objective\n"
-            "## Interfaces The Evaluator Depends On\n"
-            "## Evaluation Command\n"
-            "## Constraints\n"
+        return self._load_prompt_template("Evaluation Spec Prompt").format(
+            evaluation_command=evaluation_command,
+            evaluation_relative_path=evaluation_relative_path,
         )
 
-    def _build_experiment_prompt(self, objective_name: str, prompt_template: str | None) -> str:
-        if prompt_template is not None:
-            return prompt_template.format(
-                objective_name=objective_name,
-                running_instructions_path=".nextresearch/RUNNING_INSTRUCTIONS.md",
-                evaluation_spec_path=".nextresearch/EVALUATION_SPEC.md",
+    def _build_experiment_prompt(self, objective_name: str) -> str:
+        return self._load_prompt_template("Experiment Prompt").format(
+            objective_name=objective_name,
+            running_instructions_path=".nextresearch/RUNNING_INSTRUCTIONS.md",
+            evaluation_spec_path=".nextresearch/EVALUATION_SPEC.md",
+        )
+
+    def _load_prompt_template(self, section_title: str) -> str:
+        prompt_templates_path = Path(__file__).resolve().parents[2] / "PromptTemplates.md"
+        if not prompt_templates_path.exists():
+            raise ExperimentOrchestratorError(f"Prompt templates file not found: {prompt_templates_path}")
+
+        content = prompt_templates_path.read_text(encoding="utf-8")
+        required_sections = (
+            "Running Instructions Prompt",
+            "Evaluation Spec Prompt",
+            "Experiment Prompt",
+        )
+        heading_matches: list[tuple[int, int, str]] = []
+
+        for title in required_sections:
+            pattern = rf"^# {re.escape(title)}\s*$"
+            matches = list(re.finditer(pattern, content, flags=re.MULTILINE))
+            if not matches:
+                raise ExperimentOrchestratorError(f'Missing prompt section "{title}" in {prompt_templates_path}')
+            if len(matches) > 1:
+                raise ExperimentOrchestratorError(f'Duplicate prompt section "{title}" in {prompt_templates_path}')
+            match = matches[0]
+            heading_matches.append((match.start(), match.end(), title))
+
+        heading_matches.sort(key=lambda item: item[0])
+        sections: dict[str, str] = {}
+        for index, (_, heading_end, title) in enumerate(heading_matches):
+            next_start = heading_matches[index + 1][0] if index + 1 < len(heading_matches) else len(content)
+            sections[title] = content[heading_end:next_start].strip()
+
+        template = sections.get(section_title)
+        if template is None:
+            raise ExperimentOrchestratorError(
+                f'Missing prompt section "{section_title}" in {prompt_templates_path}'
             )
-
-        return (
-            f'You are running one automated optimization attempt for the objective "{objective_name}".\n\n'
-            "Before making changes:\n"
-            "- Read `.nextresearch/RUNNING_INSTRUCTIONS.md`.\n"
-            "- Read `.nextresearch/EVALUATION_SPEC.md`.\n\n"
-            "Your job:\n"
-            "1. Analyze the relevant code.\n"
-            "2. Choose one concrete improvement likely to improve the objective.\n"
-            "3. Implement only that improvement.\n"
-            "4. If needed, run only sanity-check commands that are allowed by `RUNNING_INSTRUCTIONS.md`.\n\n"
-            "Constraints:\n"
-            "- Do not read or modify the real evaluator implementation.\n"
-            "- Do not edit files under `.nextresearch`.\n"
-            "- Keep the change scoped.\n"
-            "- Avoid speculative refactors.\n\n"
-            "Reply with a concise summary of what you changed and why it should improve the objective."
-        )
+        if not template:
+            raise ExperimentOrchestratorError(
+                f'Prompt section "{section_title}" is empty in {prompt_templates_path}'
+            )
+        return template
 
     def _normalize_document_text(self, value: str) -> str:
         text = value.strip()
