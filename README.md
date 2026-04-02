@@ -164,6 +164,14 @@ uv run Main.py
 
 However, the current file contains environment-specific hardcoded values and should be treated as a local example, not the primary usage path.
 
+`ResetExperiments.py` is a local reset helper for starting fresh on a single objective:
+
+```bash
+uv run ResetExperiments.py
+```
+
+Set `TARGET_REPO_PATH`, `OBJECTIVE_NAME`, and optionally `DELETE_ALL_LOGS` inside the script before running it.
+
 ## Limitations
 
 - The target repository must be clean before a run starts.
