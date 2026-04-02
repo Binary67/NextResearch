@@ -22,7 +22,7 @@ def main() -> None:
     finally:
         agent.close()
 
-    print(response)
+    print(response.response_text)
     print(target_file.read_text(encoding="utf-8"))
 
 

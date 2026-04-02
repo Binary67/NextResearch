@@ -16,6 +16,14 @@ class CodexAgentError(RuntimeError):
     """Raised when the Codex app-server session cannot complete a request."""
 
 
+@dataclass(frozen=True)
+class CodexTurnResult:
+    response_text: str
+    commands: list[CommandLogEntry] = field(default_factory=list)
+    file_changes: list[FileChangeLogEntry] = field(default_factory=list)
+    errors_and_recoveries: list[str] = field(default_factory=list)
+
+
 @dataclass
 class _CommandLogState:
     command: str = ""
@@ -230,7 +238,7 @@ class CodexAgent:
         self._thread_id = None
         self._request("thread/unsubscribe", {"threadId": thread_id})
 
-    def run_instruction(self, instruction: str) -> str:
+    def run_instruction(self, instruction: str) -> CodexTurnResult:
         if not instruction or not instruction.strip():
             raise ValueError("instruction must be a non-empty string.")
         if self._thread_id is None:
@@ -268,22 +276,42 @@ class CodexAgent:
         if process.stdout is not None:
             process.stdout.close()
 
-    def _consume_turn(self, expected_turn_id: str, instruction: str) -> str:
+    def _consume_turn(self, expected_turn_id: str, instruction: str) -> CodexTurnResult:
         message_buffers: dict[str, str] = {}
         last_message_text = ""
         final_answer_text: str | None = None
         collector = _TurnLogCollector(user_request=instruction)
         did_write_log = False
 
-        def finalize_turn_log(response_text: str, error_message: str | None = None) -> None:
+        def build_turn_result(response_text: str) -> CodexTurnResult:
+            turn_entry = collector.to_entry(response_text)
+            return CodexTurnResult(
+                response_text=turn_entry.codex_response,
+                commands=turn_entry.commands,
+                file_changes=turn_entry.file_changes,
+                errors_and_recoveries=turn_entry.errors_and_recoveries,
+            )
+
+        def finalize_turn_log(response_text: str, error_message: str | None = None) -> CodexTurnResult:
             nonlocal did_write_log
-            if did_write_log:
-                return
             if error_message:
                 collector.note_error(error_message)
+            result = build_turn_result(response_text)
+            if did_write_log:
+                return result
             thread_id = self._require_thread_id()
-            self._session_log.append_turn(thread_id, collector.to_entry(response_text))
+            self._session_log.append_turn(
+                thread_id,
+                TurnLogEntry(
+                    user_request=instruction,
+                    codex_response=result.response_text,
+                    commands=result.commands,
+                    file_changes=result.file_changes,
+                    errors_and_recoveries=result.errors_and_recoveries,
+                ),
+            )
             did_write_log = True
+            return result
 
         try:
             while True:
@@ -374,8 +402,7 @@ class CodexAgent:
                         finalize_turn_log(final_answer_text or last_message_text, error_message)
                         raise CodexAgentError(error_message)
                     response_text = final_answer_text or last_message_text
-                    finalize_turn_log(response_text)
-                    return response_text
+                    return finalize_turn_log(response_text)
 
                 if method == "item/commandExecution/requestApproval":
                     error_message = "Unexpected approval request from Codex: item/commandExecution/requestApproval."
