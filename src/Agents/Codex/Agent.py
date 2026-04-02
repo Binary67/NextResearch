@@ -281,7 +281,10 @@ class CodexAgent:
         last_message_text = ""
         final_answer_text: str | None = None
         collector = _TurnLogCollector(user_request=instruction)
-        did_write_log = False
+        last_logged_response: str | None = None
+        did_finish_log = False
+        thread_id = self._require_thread_id()
+        self._session_log.append_turn_started(thread_id, instruction)
 
         def build_turn_result(response_text: str) -> CodexTurnResult:
             turn_entry = collector.to_entry(response_text)
@@ -292,15 +295,28 @@ class CodexAgent:
                 errors_and_recoveries=turn_entry.errors_and_recoveries,
             )
 
-        def finalize_turn_log(response_text: str, error_message: str | None = None) -> CodexTurnResult:
-            nonlocal did_write_log
+        def append_response_snapshot(response_text: str) -> None:
+            nonlocal last_logged_response
+            if not response_text:
+                return
+            if response_text == last_logged_response:
+                return
+            self._session_log.append_response_snapshot(thread_id, response_text)
+            last_logged_response = response_text
+
+        def finalize_turn_log(
+            response_text: str,
+            status: str,
+            error_message: str | None = None,
+        ) -> CodexTurnResult:
+            nonlocal did_finish_log
             if error_message:
                 collector.note_error(error_message)
             result = build_turn_result(response_text)
-            if did_write_log:
+            if did_finish_log:
                 return result
-            thread_id = self._require_thread_id()
-            self._session_log.append_turn(
+            append_response_snapshot(result.response_text or "(no final response)")
+            self._session_log.append_turn_finished(
                 thread_id,
                 TurnLogEntry(
                     user_request=instruction,
@@ -309,8 +325,9 @@ class CodexAgent:
                     file_changes=result.file_changes,
                     errors_and_recoveries=result.errors_and_recoveries,
                 ),
+                status,
             )
-            did_write_log = True
+            did_finish_log = True
             return result
 
         try:
@@ -356,6 +373,7 @@ class CodexAgent:
                         if item_id:
                             message_buffers[item_id] = text
                         last_message_text = text
+                        append_response_snapshot(text)
                         if item.get("phase") == "final_answer":
                             final_answer_text = text
                     elif item.get("type") == "commandExecution":
@@ -371,6 +389,7 @@ class CodexAgent:
                                 if command_state.exit_code is not None:
                                     error_message = f"{error_message} (exit_code={command_state.exit_code})"
                                 collector.note_error(f"{error_message}.")
+                            self._session_log.append_command_completed(thread_id, command_state.to_entry())
                     elif item.get("type") == "fileChange":
                         item_id = item.get("id")
                         if isinstance(item_id, str) and item_id:
@@ -378,6 +397,8 @@ class CodexAgent:
                             file_change_state.update_from_item(item)
                             if file_change_state.status in {"failed", "declined"}:
                                 collector.note_error(f"File change item ended with status {file_change_state.status}.")
+                            for file_change_entry in file_change_state.to_entries():
+                                self._session_log.append_file_change_completed(thread_id, file_change_entry)
                     continue
 
                 if method == "turn/completed":
@@ -391,40 +412,40 @@ class CodexAgent:
                     if status == "failed":
                         error = turn.get("error") or {}
                         error_message = error.get("message", "Codex turn failed.")
-                        finalize_turn_log(final_answer_text or last_message_text, error_message)
+                        finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
                         raise CodexAgentError(error_message)
                     if status == "interrupted":
                         error_message = "Codex turn was interrupted."
-                        finalize_turn_log(final_answer_text or last_message_text, error_message)
+                        finalize_turn_log(final_answer_text or last_message_text, "interrupted", error_message)
                         raise CodexAgentError(error_message)
                     if status != "completed":
                         error_message = f"Unexpected Codex turn status: {status!r}"
-                        finalize_turn_log(final_answer_text or last_message_text, error_message)
+                        finalize_turn_log(final_answer_text or last_message_text, f"unexpected:{status!r}", error_message)
                         raise CodexAgentError(error_message)
                     response_text = final_answer_text or last_message_text
-                    return finalize_turn_log(response_text)
+                    return finalize_turn_log(response_text, "completed")
 
                 if method == "item/commandExecution/requestApproval":
                     error_message = "Unexpected approval request from Codex: item/commandExecution/requestApproval."
-                    finalize_turn_log(final_answer_text or last_message_text, error_message)
+                    finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
                     raise CodexAgentError(error_message)
 
                 if method == "item/fileChange/requestApproval":
                     error_message = "Unexpected approval request from Codex: item/fileChange/requestApproval."
-                    finalize_turn_log(final_answer_text or last_message_text, error_message)
+                    finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
                     raise CodexAgentError(error_message)
 
                 if method == "item/tool/requestUserInput":
                     error_message = "Unexpected approval request from Codex: item/tool/requestUserInput."
-                    finalize_turn_log(final_answer_text or last_message_text, error_message)
+                    finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
                     raise CodexAgentError(error_message)
 
                 if method == "item/tool/call":
                     error_message = "Unexpected approval request from Codex: item/tool/call."
-                    finalize_turn_log(final_answer_text or last_message_text, error_message)
+                    finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
                     raise CodexAgentError(error_message)
         except Exception as exc:
-            finalize_turn_log(final_answer_text or last_message_text, str(exc))
+            finalize_turn_log(final_answer_text or last_message_text, "failed", str(exc))
             raise
 
     def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:

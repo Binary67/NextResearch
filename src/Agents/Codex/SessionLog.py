@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +32,7 @@ class CodexSessionLog:
     def __init__(self, logs_root: Path | str | None = None) -> None:
         self._logs_root = Path(logs_root) if logs_root is not None else self._default_logs_root()
         self._logs_root.mkdir(parents=True, exist_ok=True)
+        self._thread_paths: dict[str, Path] = {}
 
     @property
     def logs_root(self) -> Path:
@@ -42,44 +42,75 @@ class CodexSessionLog:
         if not thread_id or not thread_id.strip():
             raise ValueError("thread_id must be a non-empty string.")
 
-        digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:16]
-        return self._logs_root / f"codex_session_{digest}.md"
+        path = self._thread_paths.get(thread_id)
+        if path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = self._logs_root / f"codex_session_{timestamp}.md"
+            self._thread_paths[thread_id] = path
+        return path
 
     def append_session_started(self, thread_id: str, cwd: str | None) -> Path:
         return self._append_sections(
             self.path_for_thread(thread_id),
-            [self._single_line_section("Session Started", self._describe_session(cwd))],
+            [
+                self._single_line_section("Session Started", self._describe_session(cwd)),
+                self._single_line_section("Thread Id", thread_id),
+            ],
         )
 
-    def append_turn(self, thread_id: str, turn: TurnLogEntry) -> Path:
+    def append_turn_started(self, thread_id: str, user_request: str) -> Path:
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [self._multi_line_section("User Request", user_request)],
+        )
+
+    def append_response_snapshot(self, thread_id: str, response_text: str) -> Path:
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [self._multi_line_section("Codex Response", response_text)],
+        )
+
+    def append_command_completed(self, thread_id: str, command: CommandLogEntry) -> Path:
+        status_line = command.status or "unknown"
+        if command.exit_code is not None:
+            status_line = f"{status_line}; exit_code={command.exit_code}"
+
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [
+                self._single_line_section("Commands Run", command.command),
+                self._single_line_section("Command Status", status_line),
+            ],
+        )
+
+    def append_file_change_completed(self, thread_id: str, file_change: FileChangeLogEntry) -> Path:
+        changed_line = file_change.path
+        if file_change.kind:
+            changed_line = f"{changed_line} ({file_change.kind})"
+
+        diff_text = file_change.diff.strip() or "(no diff available)"
+        if diff_text != "(no diff available)":
+            diff_text = f"```diff\n{diff_text.rstrip()}\n```"
+
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [
+                self._single_line_section("File Changed", changed_line),
+                self._multi_line_section("Code Diff", diff_text),
+            ],
+        )
+
+    def append_turn_finished(self, thread_id: str, turn: TurnLogEntry, status: str) -> Path:
         work_summary = f"Ran {len(turn.commands)} command(s). Changed {len(turn.file_changes)} file(s)."
         sections: list[tuple[str, str]] = [
-            self._multi_line_section("User Request", turn.user_request),
-            self._multi_line_section("Codex Response", turn.codex_response or "(no final response)"),
+            self._single_line_section("Turn Status", status),
             self._single_line_section("Work Performed", work_summary),
         ]
 
-        if turn.commands:
-            for command in turn.commands:
-                sections.append(self._single_line_section("Commands Run", command.command))
-                status_line = command.status or "unknown"
-                if command.exit_code is not None:
-                    status_line = f"{status_line}; exit_code={command.exit_code}"
-                sections.append(self._single_line_section("Command Status", status_line))
-        else:
+        if not turn.commands:
             sections.append(self._single_line_section("Commands Run", "None"))
 
-        if turn.file_changes:
-            for file_change in turn.file_changes:
-                changed_line = file_change.path
-                if file_change.kind:
-                    changed_line = f"{changed_line} ({file_change.kind})"
-                sections.append(self._single_line_section("File Changed", changed_line))
-                diff_text = file_change.diff.strip() or "(no diff available)"
-                if diff_text != "(no diff available)":
-                    diff_text = f"```diff\n{diff_text.rstrip()}\n```"
-                sections.append(self._multi_line_section("Code Diff", diff_text))
-        else:
+        if not turn.file_changes:
             sections.append(self._single_line_section("File Changed", "None"))
 
         if turn.errors_and_recoveries:
@@ -87,6 +118,7 @@ class CodexSessionLog:
             sections.append(self._multi_line_section("Errors And Recoveries", errors_text))
         else:
             sections.append(self._single_line_section("Errors And Recoveries", "None"))
+
         return self._append_sections(self.path_for_thread(thread_id), sections)
 
     def _append_sections(self, path: Path, sections: list[tuple[str, str]]) -> Path:
