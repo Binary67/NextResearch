@@ -7,12 +7,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.Agents.Codex import CodexAgent, CodexAgentError, CodexTurnResult
+from src.Agents.Codex import CodexAgentError, CodexSessionRunResult, CodexSessionRunner
 
 from .EvaluationRunner import EvaluationRunner
 from .ExperimentLedger import ExperimentLedger
 from .GitWorkspace import GitWorkspaceManager
 from .Models import BootstrapArtifacts, ExperimentIterationResult, ExperimentOrchestratorError, ExperimentRunConfig
+from .ExperimentPrompts import (
+    build_evaluation_spec_prompt,
+    build_experiment_prompt,
+    build_running_instructions_prompt,
+    normalize_document_text,
+)
 
 
 @dataclass(frozen=True)
@@ -20,12 +26,6 @@ class _RepoContext:
     repo_root: Path
     target_path: Path
     target_relative_path: Path
-
-
-@dataclass(frozen=True)
-class _SessionRunResult:
-    turn_result: CodexTurnResult
-    session_log_path: Path | None
 
 
 class ExperimentOrchestrator:
@@ -42,6 +42,10 @@ class ExperimentOrchestrator:
         self._worktrees_root.mkdir(parents=True, exist_ok=True)
         self._ledger = ExperimentLedger(self._logs_root / "codex_experiments.jsonl")
         self._evaluation_runner = EvaluationRunner()
+        self._codex_session_runner = CodexSessionRunner(
+            codex_executable=self._codex_executable,
+            logs_root=self._logs_root,
+        )
 
     @property
     def logs_root(self) -> Path:
@@ -75,8 +79,8 @@ class ExperimentOrchestrator:
         bootstrap_ref = self._resolve_start_ref(workspace, objective_slug, baseline_branch)
         bootstrap_id = f"bootstrap-{self._timestamp_token()}"
         worktree_path = self._worktrees_root / objective_slug / bootstrap_id
-        running_result: _SessionRunResult | None = None
-        evaluation_result: _SessionRunResult | None = None
+        running_result: CodexSessionRunResult | None = None
+        evaluation_result: CodexSessionRunResult | None = None
         running_log_path: Path | None = None
         evaluation_log_path: Path | None = None
 
@@ -84,12 +88,12 @@ class ExperimentOrchestrator:
         target_cwd = worktree_path / context.target_relative_path
 
         try:
-            running_result = self._run_codex_session(target_cwd, self._build_running_instructions_prompt())
+            running_result = self._codex_session_runner.run(target_cwd, build_running_instructions_prompt())
             running_log_path = running_result.session_log_path
 
-            evaluation_result = self._run_codex_session(
+            evaluation_result = self._codex_session_runner.run(
                 target_cwd,
-                self._build_evaluation_spec_prompt(
+                build_evaluation_spec_prompt(
                     evaluation_command=evaluation_command,
                     evaluation_relative_path=evaluation_relative_path,
                 ),
@@ -102,8 +106,8 @@ class ExperimentOrchestrator:
             raise ExperimentOrchestratorError("Bootstrap sessions did not complete successfully.")
 
         return BootstrapArtifacts(
-            running_instructions=self._normalize_document_text(running_result.turn_result.response_text),
-            evaluation_spec=self._normalize_document_text(evaluation_result.turn_result.response_text),
+            running_instructions=normalize_document_text(running_result.turn_result.response_text),
+            evaluation_spec=normalize_document_text(evaluation_result.turn_result.response_text),
             running_session_log_path=running_log_path,
             evaluation_session_log_path=evaluation_log_path,
         )
@@ -156,9 +160,9 @@ class ExperimentOrchestrator:
             try:
                 workspace.create_experiment_worktree(branch_name, worktree_path, current_base_commit)
                 self._write_run_docs(docs_dir, bootstrap_artifacts)
-                session_result = self._run_codex_session(
+                session_result = self._codex_session_runner.run(
                     run_cwd,
-                    self._build_experiment_prompt(objective_name=config.objective_name),
+                    build_experiment_prompt(objective_name=config.objective_name),
                 )
                 response_text = session_result.turn_result.response_text
                 session_log_path = session_result.session_log_path
@@ -290,81 +294,6 @@ class ExperimentOrchestrator:
                 if candidate.exists():
                     return candidate
         return None
-
-    def _run_codex_session(self, cwd: Path, instruction: str) -> _SessionRunResult:
-        agent = CodexAgent(codex_executable=self._codex_executable, logs_root=self._logs_root)
-        try:
-            agent.start_session(str(cwd))
-            turn_result = agent.run_instruction(instruction)
-            session_log_path = agent.session_log_path
-            agent.end_session()
-        finally:
-            agent.close()
-        return _SessionRunResult(turn_result=turn_result, session_log_path=session_log_path)
-
-    def _build_running_instructions_prompt(self) -> str:
-        return self._load_prompt_template("Running Instructions Prompt")
-
-    def _build_evaluation_spec_prompt(self, evaluation_command: str, evaluation_relative_path: str) -> str:
-        return self._load_prompt_template("Evaluation Spec Prompt").format(
-            evaluation_command=evaluation_command,
-            evaluation_relative_path=evaluation_relative_path,
-        )
-
-    def _build_experiment_prompt(self, objective_name: str) -> str:
-        return self._load_prompt_template("Experiment Prompt").format(
-            objective_name=objective_name,
-            running_instructions_path=".nextresearch/RUNNING_INSTRUCTIONS.md",
-            evaluation_spec_path=".nextresearch/EVALUATION_SPEC.md",
-        )
-
-    def _load_prompt_template(self, section_title: str) -> str:
-        prompt_templates_path = Path(__file__).resolve().parents[2] / "PromptTemplates.md"
-        if not prompt_templates_path.exists():
-            raise ExperimentOrchestratorError(f"Prompt templates file not found: {prompt_templates_path}")
-
-        content = prompt_templates_path.read_text(encoding="utf-8")
-        required_sections = (
-            "Running Instructions Prompt",
-            "Evaluation Spec Prompt",
-            "Experiment Prompt",
-        )
-        heading_matches: list[tuple[int, int, str]] = []
-
-        for title in required_sections:
-            pattern = rf"^# {re.escape(title)}\s*$"
-            matches = list(re.finditer(pattern, content, flags=re.MULTILINE))
-            if not matches:
-                raise ExperimentOrchestratorError(f'Missing prompt section "{title}" in {prompt_templates_path}')
-            if len(matches) > 1:
-                raise ExperimentOrchestratorError(f'Duplicate prompt section "{title}" in {prompt_templates_path}')
-            match = matches[0]
-            heading_matches.append((match.start(), match.end(), title))
-
-        heading_matches.sort(key=lambda item: item[0])
-        sections: dict[str, str] = {}
-        for index, (_, heading_end, title) in enumerate(heading_matches):
-            next_start = heading_matches[index + 1][0] if index + 1 < len(heading_matches) else len(content)
-            sections[title] = content[heading_end:next_start].strip()
-
-        template = sections.get(section_title)
-        if template is None:
-            raise ExperimentOrchestratorError(
-                f'Missing prompt section "{section_title}" in {prompt_templates_path}'
-            )
-        if not template:
-            raise ExperimentOrchestratorError(
-                f'Prompt section "{section_title}" is empty in {prompt_templates_path}'
-            )
-        return template
-
-    def _normalize_document_text(self, value: str) -> str:
-        text = value.strip()
-        if text.startswith("```") and text.endswith("```"):
-            lines = text.splitlines()
-            if len(lines) >= 3:
-                text = "\n".join(lines[1:-1]).strip()
-        return text + "\n"
 
     def _score_reference(
         self,
