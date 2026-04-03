@@ -9,11 +9,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.EditPolicy import EditPolicy
+
 from .SessionLog import CodexSessionLog, CommandLogEntry, FileChangeLogEntry, TurnLogEntry
 
 
 class CodexAgentError(RuntimeError):
     """Raised when the Codex app-server session cannot complete a request."""
+
+    def __init__(self, message: str, session_log_path: Path | None = None) -> None:
+        super().__init__(message)
+        self.session_log_path = session_log_path
 
 
 @dataclass(frozen=True)
@@ -160,12 +166,14 @@ class CodexAgent:
         client_title: str = "NextResearch",
         client_version: str = "0.1.0",
         logs_root: Path | str | None = None,
+        edit_policy: EditPolicy | None = None,
     ) -> None:
         self._codex_executable = codex_executable or self._resolve_codex_executable()
         self._client_name = client_name
         self._client_title = client_title
         self._client_version = client_version
         self._session_log = CodexSessionLog(logs_root)
+        self._edit_policy = edit_policy
         self._process: subprocess.Popen[str] | None = None
         self._next_request_id = 1
         self._pending_messages: deque[dict[str, Any]] = deque()
@@ -220,15 +228,18 @@ class CodexAgent:
 
         result = self._request(
             "thread/start",
-            {
-                "approvalPolicy": "never",
-                "cwd": normalized_cwd,
-                "sandbox": "danger-full-access",
-            },
+            self._build_thread_start_params(normalized_cwd),
         )
 
         self._thread_id = self._extract_thread_id_from_session_result(result, "thread/start")
         self._session_log.append_session_started(self._thread_id, normalized_cwd)
+        if self._edit_policy is not None:
+            self._session_log.append_edit_policy(
+                self._thread_id,
+                self._edit_policy.mode_label,
+                list(self._edit_policy.editable_rule_paths()),
+                list(self._edit_policy.non_editable_rule_paths()),
+            )
 
     def end_session(self) -> None:
         if self._thread_id is None:
@@ -275,6 +286,14 @@ class CodexAgent:
             process.stdin.close()
         if process.stdout is not None:
             process.stdout.close()
+
+    def append_policy_violation(self, message: str) -> None:
+        if self._thread_id is None or not message:
+            return
+        self._session_log.append_policy_violation(self._thread_id, message)
+
+    def build_error(self, message: str) -> CodexAgentError:
+        return CodexAgentError(message, self.session_log_path)
 
     def _consume_turn(self, expected_turn_id: str, instruction: str) -> CodexTurnResult:
         message_buffers: dict[str, str] = {}
@@ -333,6 +352,8 @@ class CodexAgent:
         try:
             while True:
                 message = self._read_message()
+                if self._handle_server_request(message, collector):
+                    continue
                 self._raise_for_server_request(message)
 
                 if "id" in message:
@@ -413,37 +434,17 @@ class CodexAgent:
                         error = turn.get("error") or {}
                         error_message = error.get("message", "Codex turn failed.")
                         finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
-                        raise CodexAgentError(error_message)
+                        raise self.build_error(error_message)
                     if status == "interrupted":
                         error_message = "Codex turn was interrupted."
                         finalize_turn_log(final_answer_text or last_message_text, "interrupted", error_message)
-                        raise CodexAgentError(error_message)
+                        raise self.build_error(error_message)
                     if status != "completed":
                         error_message = f"Unexpected Codex turn status: {status!r}"
                         finalize_turn_log(final_answer_text or last_message_text, f"unexpected:{status!r}", error_message)
-                        raise CodexAgentError(error_message)
+                        raise self.build_error(error_message)
                     response_text = final_answer_text or last_message_text
                     return finalize_turn_log(response_text, "completed")
-
-                if method == "item/commandExecution/requestApproval":
-                    error_message = "Unexpected approval request from Codex: item/commandExecution/requestApproval."
-                    finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
-                    raise CodexAgentError(error_message)
-
-                if method == "item/fileChange/requestApproval":
-                    error_message = "Unexpected approval request from Codex: item/fileChange/requestApproval."
-                    finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
-                    raise CodexAgentError(error_message)
-
-                if method == "item/tool/requestUserInput":
-                    error_message = "Unexpected approval request from Codex: item/tool/requestUserInput."
-                    finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
-                    raise CodexAgentError(error_message)
-
-                if method == "item/tool/call":
-                    error_message = "Unexpected approval request from Codex: item/tool/call."
-                    finalize_turn_log(final_answer_text or last_message_text, "failed", error_message)
-                    raise CodexAgentError(error_message)
         except Exception as exc:
             finalize_turn_log(final_answer_text or last_message_text, "failed", str(exc))
             raise
@@ -464,9 +465,9 @@ class CodexAgent:
 
             if "error" in message:
                 error = message["error"]
-                raise CodexAgentError(error.get("message", f"Codex request failed for {method}."))
+                raise self.build_error(error.get("message", f"Codex request failed for {method}."))
             if "result" not in message:
-                raise CodexAgentError(f"Codex response for {method} did not include a result.")
+                raise self.build_error(f"Codex response for {method} did not include a result.")
             if deferred_messages:
                 self._pending_messages.extendleft(reversed(deferred_messages))
             return message["result"]
@@ -477,7 +478,7 @@ class CodexAgent:
     def _write_message(self, message: dict[str, Any]) -> None:
         process = self._require_process()
         if process.stdin is None:
-            raise CodexAgentError("Codex app-server stdin is not available.")
+            raise self.build_error("Codex app-server stdin is not available.")
 
         process.stdin.write(json.dumps(message) + "\n")
         process.stdin.flush()
@@ -488,12 +489,12 @@ class CodexAgent:
 
         process = self._require_process()
         if process.stdout is None:
-            raise CodexAgentError("Codex app-server stdout is not available.")
+            raise self.build_error("Codex app-server stdout is not available.")
 
         line = process.stdout.readline()
         if line == "":
             exit_code = process.poll()
-            raise CodexAgentError(
+            raise self.build_error(
                 "Codex app-server closed the connection unexpectedly."
                 if exit_code is None
                 else f"Codex app-server exited unexpectedly with code {exit_code}."
@@ -502,23 +503,23 @@ class CodexAgent:
         try:
             payload = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise CodexAgentError(f"Codex app-server returned invalid JSON: {line!r}") from exc
+            raise self.build_error(f"Codex app-server returned invalid JSON: {line!r}") from exc
 
         if not isinstance(payload, dict):
-            raise CodexAgentError(f"Codex app-server returned an unexpected message: {payload!r}")
+            raise self.build_error(f"Codex app-server returned an unexpected message: {payload!r}")
         return payload
 
     def _extract_turn_id(self, result: dict[str, Any]) -> str:
         try:
             return result["turn"]["id"]
         except (KeyError, TypeError) as exc:
-            raise CodexAgentError("Codex app-server returned an invalid turn/start response.") from exc
+            raise self.build_error("Codex app-server returned an invalid turn/start response.") from exc
 
     def _extract_thread_id_from_session_result(self, result: dict[str, Any], operation: str) -> str:
         try:
             return result["thread"]["id"]
         except (KeyError, TypeError) as exc:
-            raise CodexAgentError(f"Codex app-server returned an invalid {operation} response.") from exc
+            raise self.build_error(f"Codex app-server returned an invalid {operation} response.") from exc
 
     def _normalize_cwd(self, cwd: str | None) -> str | None:
         if cwd is None:
@@ -533,13 +534,13 @@ class CodexAgent:
 
     def _raise_for_server_request(self, message: dict[str, Any]) -> None:
         if "method" in message and "id" in message and "result" not in message and "error" not in message:
-            raise CodexAgentError(
+            raise self.build_error(
                 f"Codex requested client-side handling for {message['method']}, which this wrapper does not support."
             )
 
     def _require_process(self) -> subprocess.Popen[str]:
         if self._process is None:
-            raise CodexAgentError("Codex agent is not started.")
+            raise self.build_error("Codex agent is not started.")
         return self._process
 
     def _resolve_codex_executable(self) -> str:
@@ -549,7 +550,7 @@ class CodexAgent:
 
     def _require_thread_id(self) -> str:
         if self._thread_id is None:
-            raise CodexAgentError("Codex thread is not initialized.")
+            raise self.build_error("Codex thread is not initialized.")
         return self._thread_id
 
     def _extract_delta_text(self, params: dict[str, Any]) -> str:
@@ -575,3 +576,157 @@ class CodexAgent:
                 values.append(json.dumps(value, ensure_ascii=False, indent=2))
 
         return "\n".join(values).strip()
+
+    def _build_thread_start_params(self, normalized_cwd: str | None) -> dict[str, Any]:
+        if self._edit_policy is None:
+            return {
+                "approvalPolicy": "never",
+                "cwd": normalized_cwd,
+                "sandbox": "danger-full-access",
+            }
+
+        return {
+            "approvalPolicy": {
+                "granular": {
+                    "mcp_elicitations": False,
+                    "request_permissions": True,
+                    "rules": False,
+                    "sandbox_approval": True,
+                }
+            },
+            "cwd": normalized_cwd,
+            "sandbox": "workspace-write",
+        }
+
+    def _handle_server_request(
+        self,
+        message: dict[str, Any],
+        collector: _TurnLogCollector | None = None,
+    ) -> bool:
+        if "method" not in message or "id" not in message or "result" in message or "error" in message:
+            return False
+
+        method = message["method"]
+        params = message.get("params", {})
+
+        if method == "item/fileChange/requestApproval":
+            response = self._build_file_change_approval_response(params, collector)
+            self._write_message({"id": message["id"], "result": response})
+            return True
+
+        if method == "item/permissions/requestApproval":
+            response = self._build_permissions_approval_response(params, collector)
+            self._write_message({"id": message["id"], "result": response})
+            return True
+
+        if method == "item/commandExecution/requestApproval":
+            self._write_message({"id": message["id"], "result": {"decision": "accept"}})
+            return True
+
+        return False
+
+    def _build_file_change_approval_response(
+        self,
+        params: dict[str, Any],
+        collector: _TurnLogCollector | None,
+    ) -> dict[str, str]:
+        if self._edit_policy is None:
+            return {"decision": "accept"}
+
+        requested_paths = self._extract_requested_file_change_paths(params, collector)
+        if not requested_paths:
+            reason = "Declined file change approval because Codex did not provide paths to validate"
+            self._record_policy_denial("(unknown path)", reason, collector)
+            return {"decision": "decline"}
+
+        violations = self._edit_policy.find_disallowed_paths(requested_paths)
+        if violations:
+            for violation in violations:
+                self._record_policy_denial(violation.display_path, violation.reason, collector)
+            return {"decision": "decline"}
+        return {"decision": "accept"}
+
+    def _build_permissions_approval_response(
+        self,
+        params: dict[str, Any],
+        collector: _TurnLogCollector | None,
+    ) -> dict[str, Any]:
+        permissions = params.get("permissions")
+        if not isinstance(permissions, dict):
+            return {"permissions": {}, "scope": "turn"}
+
+        if self._edit_policy is None:
+            return {"permissions": permissions, "scope": "turn"}
+
+        requested_file_system = permissions.get("fileSystem")
+        requested_network = permissions.get("network")
+
+        granted_permissions: dict[str, Any] = {}
+        granted_file_system: dict[str, Any] = {}
+
+        if isinstance(requested_file_system, dict):
+            requested_read = requested_file_system.get("read")
+            if isinstance(requested_read, list):
+                granted_file_system["read"] = [value for value in requested_read if isinstance(value, str)]
+
+            requested_write = requested_file_system.get("write")
+            if isinstance(requested_write, list):
+                granted_write: list[str] = []
+                for value in requested_write:
+                    if not isinstance(value, str):
+                        continue
+                    decision = self._edit_policy.evaluate_path(value)
+                    if decision.allowed:
+                        granted_write.append(str(Path(value).expanduser().resolve(strict=False)))
+                    else:
+                        self._record_policy_denial(decision.display_path, decision.reason, collector)
+                if granted_write:
+                    granted_file_system["write"] = granted_write
+
+        if granted_file_system:
+            granted_permissions["fileSystem"] = granted_file_system
+        if isinstance(requested_network, dict):
+            granted_permissions["network"] = requested_network
+
+        return {"permissions": granted_permissions, "scope": "turn"}
+
+    def _extract_requested_file_change_paths(
+        self,
+        params: dict[str, Any],
+        collector: _TurnLogCollector | None,
+    ) -> list[str]:
+        paths: list[str] = []
+
+        item_id = params.get("itemId")
+        if isinstance(item_id, str) and collector is not None:
+            state = collector.file_change_states.get(item_id)
+            if state is not None:
+                for change in state.changes:
+                    path = change.get("path")
+                    if isinstance(path, str) and path:
+                        paths.append(path)
+
+        grant_root = params.get("grantRoot")
+        if isinstance(grant_root, str) and grant_root:
+            paths.append(grant_root)
+
+        deduped_paths: list[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped_paths.append(path)
+        return deduped_paths
+
+    def _record_policy_denial(
+        self,
+        path: str,
+        reason: str,
+        collector: _TurnLogCollector | None,
+    ) -> None:
+        message = f"Declined write to `{path}`: {reason}."
+        if collector is not None:
+            collector.note_error(message)
+        if self._thread_id is not None:
+            self._session_log.append_policy_denial(self._thread_id, path, reason)

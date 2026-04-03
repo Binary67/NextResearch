@@ -42,3 +42,5 @@ class ExperimentRunConfig:
     iteration_count: int
     evaluation_file_path: str | Path | None = None
     baseline_branch: str | None = None
+    editable_paths: tuple[str, ...] = ()
+    non_editable_paths: tuple[str, ...] = ()

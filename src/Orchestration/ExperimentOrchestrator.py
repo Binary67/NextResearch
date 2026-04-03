@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.Agents.Codex import CodexAgentError, CodexSessionRunResult, CodexSessionRunner
+from src.EditPolicy import EditPolicy
 
 from .EvaluationRunner import EvaluationRunner
 from .ExperimentLedger import ExperimentLedger
@@ -160,9 +161,17 @@ class ExperimentOrchestrator:
             try:
                 workspace.create_experiment_worktree(branch_name, worktree_path, current_base_commit)
                 self._write_run_docs(docs_dir, bootstrap_artifacts)
+                edit_policy = EditPolicy.from_paths(
+                    worktree_path,
+                    session_cwd=run_cwd,
+                    editable_paths=config.editable_paths,
+                    non_editable_paths=config.non_editable_paths,
+                )
+                self._print_edit_policy(edit_policy)
                 session_result = self._codex_session_runner.run(
                     run_cwd,
-                    build_experiment_prompt(objective_name=config.objective_name),
+                    self._build_experiment_instruction(config.objective_name, edit_policy),
+                    edit_policy=edit_policy,
                 )
                 response_text = session_result.turn_result.response_text
                 session_log_path = session_result.session_log_path
@@ -193,6 +202,7 @@ class ExperimentOrchestrator:
             except CodexAgentError as exc:
                 status = "codex_failed"
                 response_text = str(exc)
+                session_log_path = exc.session_log_path or session_log_path
                 self._remove_run_docs(docs_dir)
             except Exception as exc:
                 if isinstance(exc, ExperimentOrchestratorError):
@@ -340,3 +350,14 @@ class ExperimentOrchestrator:
 
     def _default_logs_root(self) -> Path:
         return Path(__file__).resolve().parents[2] / "Logs"
+
+    def _build_experiment_instruction(self, objective_name: str, edit_policy: EditPolicy) -> str:
+        return f"{edit_policy.prompt_prefix()}\n\n{build_experiment_prompt(objective_name=objective_name)}"
+
+    def _print_edit_policy(self, edit_policy: EditPolicy) -> None:
+        editable_text = ", ".join(edit_policy.editable_rule_paths()) or "all repo paths"
+        non_editable_text = ", ".join(edit_policy.non_editable_rule_paths()) or "none"
+        print(f"Codex edit policy repo_root={edit_policy.repo_root}")
+        print(f"Codex edit policy mode={edit_policy.mode_label}")
+        print(f"Codex editable_paths={editable_text}")
+        print(f"Codex non_editable_paths={non_editable_text}")

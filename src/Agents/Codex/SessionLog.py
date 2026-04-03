@@ -121,6 +121,41 @@ class CodexSessionLog:
 
         return self._append_sections(self.path_for_thread(thread_id), sections)
 
+    def append_edit_policy(
+        self,
+        thread_id: str,
+        mode: str,
+        editable_paths: list[str],
+        non_editable_paths: list[str],
+    ) -> Path:
+        editable_text = "\n".join(f"- {path}" for path in editable_paths) if editable_paths else "All repo paths\n"
+        non_editable_text = (
+            "\n".join(f"- {path}" for path in non_editable_paths) if non_editable_paths else "None\n"
+        )
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [
+                self._single_line_section("Edit Policy Mode", mode),
+                self._multi_line_section("Editable Paths", editable_text),
+                self._multi_line_section("Non-Editable Paths", non_editable_text),
+            ],
+        )
+
+    def append_policy_denial(self, thread_id: str, path: str, reason: str) -> Path:
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [
+                self._single_line_section("Policy Denial", path),
+                self._single_line_section("Policy Reason", reason),
+            ],
+        )
+
+    def append_policy_violation(self, thread_id: str, message: str) -> Path:
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [self._multi_line_section("Policy Violation", message)],
+        )
+
     def _append_sections(self, path: Path, sections: list[tuple[str, str]]) -> Path:
         with path.open("a", encoding="utf-8") as handle:
             if path.exists() and path.stat().st_size > 0:
