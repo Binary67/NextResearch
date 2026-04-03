@@ -586,14 +586,7 @@ class CodexAgent:
             }
 
         return {
-            "approvalPolicy": {
-                "granular": {
-                    "mcp_elicitations": False,
-                    "request_permissions": True,
-                    "rules": False,
-                    "sandbox_approval": True,
-                }
-            },
+            "approvalPolicy": "on-request",
             "cwd": normalized_cwd,
             "sandbox": "workspace-write",
         }

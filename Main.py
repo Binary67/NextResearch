@@ -10,9 +10,8 @@ DEFAULT_CONFIG = ExperimentRunConfig(
     target_repo_path=PROJECT_ROOT,
     objective_name="maximize-evaluation-score",
     evaluation_command="uv run evaluation.py",
-    iteration_count=1,
-    editable_paths=("feature_engineering.py", 
-                    "train.py"),
+    iteration_count=5,
+    editable_paths=(),
     non_editable_paths=("evaluation.py",
                         "data_processing.py"),
 )

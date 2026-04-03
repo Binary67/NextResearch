@@ -28,6 +28,8 @@ def reset_experiment_state(
     removed_session_logs = 0
     removed_ledger_entries = 0
 
+    _run_git(repo_root, "worktree", "prune")
+
     for worktree_path in _list_registered_worktrees(repo_root):
         if worktree_path == repo_root:
             continue
