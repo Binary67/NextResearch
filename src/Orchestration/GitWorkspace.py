@@ -94,6 +94,19 @@ class GitWorkspaceManager:
             raise ExperimentOrchestratorError(f"git {' '.join(args)} failed: {stderr}")
         return completed.stdout.strip()
 
+    def git_output_bytes(self, cwd: Path, *args: str) -> bytes:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+        )
+        if completed.returncode != 0:
+            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+            stdout = completed.stdout.decode("utf-8", errors="replace").strip()
+            message = stderr or stdout
+            raise ExperimentOrchestratorError(f"git {' '.join(args)} failed: {message}")
+        return completed.stdout
+
     def run_git(self, cwd: Path, *args: str) -> None:
         completed = subprocess.run(
             ["git", *args],

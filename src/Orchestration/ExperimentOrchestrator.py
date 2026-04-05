@@ -438,12 +438,49 @@ class ExperimentOrchestrator:
             return
 
         workspace.run_git(worktree_path, "add", "-A")
-        git_diff = workspace.git_output(worktree_path, "diff", "--cached", "--binary", "HEAD")
-        changed_paths = workspace.git_output(worktree_path, "diff", "--cached", "--name-only", "HEAD")
-        git_tracked_changes = len([line for line in changed_paths.splitlines() if line.strip()])
+        changed_paths = workspace.git_output_bytes(worktree_path, "diff", "--cached", "--name-only", "-z", "HEAD")
+        git_tracked_changes = len([entry for entry in changed_paths.split(b"\0") if entry])
+        text_paths = self._staged_text_paths_for_log(workspace, worktree_path)
+        git_diff = workspace.git_output(worktree_path, "diff", "--cached", "HEAD", "--", *text_paths) if text_paths else ""
         self._session_log.append_post_run_review(
             session_log_path,
             app_server_file_changes=app_server_file_changes,
             git_tracked_changes=git_tracked_changes,
             git_diff=git_diff,
         )
+
+    def _staged_text_paths_for_log(
+        self,
+        workspace: GitWorkspaceManager,
+        worktree_path: Path,
+    ) -> list[str]:
+        numstat_output = workspace.git_output_bytes(
+            worktree_path,
+            "diff",
+            "--cached",
+            "--numstat",
+            "--no-renames",
+            "-z",
+            "HEAD",
+        )
+        text_paths: list[str] = []
+        seen_paths: set[str] = set()
+
+        for entry in numstat_output.split(b"\0"):
+            if not entry:
+                continue
+            fields = entry.split(b"\t", 2)
+            if len(fields) != 3:
+                raise ExperimentOrchestratorError("Unexpected git numstat output while building session log.")
+
+            added, deleted, raw_path = fields
+            if added == b"-" and deleted == b"-":
+                continue
+
+            path = raw_path.decode("utf-8", errors="replace")
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            text_paths.append(path)
+
+        return text_paths

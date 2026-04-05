@@ -108,9 +108,12 @@ class CodexSessionLog:
         git_tracked_changes: int,
         git_diff: str,
     ) -> Path:
-        diff_text = git_diff.strip() or "(no git-tracked changes)"
-        if diff_text != "(no git-tracked changes)":
-            diff_text = f"```diff\n{diff_text.rstrip()}\n```"
+        if git_diff.strip():
+            diff_text = f"```diff\n{git_diff.rstrip()}\n```"
+        elif git_tracked_changes == 0:
+            diff_text = "(no git-tracked changes)"
+        else:
+            diff_text = "(no text/code git-tracked changes)"
 
         return self._append_sections(
             path,
