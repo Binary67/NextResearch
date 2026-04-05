@@ -61,6 +61,7 @@ The run configuration includes:
 - `objective_name`
 - `evaluation_command`
 - `iteration_count`
+- `optimization_direction`
 - optional `evaluation_file_path`
 - optional `baseline_branch`
 
@@ -73,6 +74,7 @@ The evaluator is treated as an external command and must follow this contract:
 - it is executed with the configured `evaluation_command`
 - a non-zero exit code fails the run
 - the last non-empty line of stdout must be parseable as a `float`
+- `optimization_direction` decides whether lower or higher scores are better
 
 If the evaluator file path cannot be inferred from the command, you must provide `evaluation_file_path` explicitly.
 
@@ -88,6 +90,7 @@ config = ExperimentRunConfig(
     objective_name="maximize-evaluation-score",
     evaluation_command="uv run evaluation.py",
     iteration_count=3,
+    optimization_direction="minimize",
 )
 
 orchestrator = ExperimentOrchestrator()

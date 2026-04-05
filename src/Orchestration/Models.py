@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 class ExperimentOrchestratorError(RuntimeError):
@@ -40,7 +41,12 @@ class ExperimentRunConfig:
     objective_name: str
     evaluation_command: str
     iteration_count: int
+    optimization_direction: Literal["minimize", "maximize"]
     evaluation_file_path: str | Path | None = None
     baseline_branch: str | None = None
     editable_paths: tuple[str, ...] = ()
     non_editable_paths: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.optimization_direction not in {"minimize", "maximize"}:
+            raise ValueError("optimization_direction must be 'minimize' or 'maximize'.")

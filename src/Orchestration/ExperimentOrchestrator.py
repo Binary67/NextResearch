@@ -180,8 +180,8 @@ class ExperimentOrchestrator:
                 score = evaluation_outcome.score
                 evaluation_stdout = evaluation_outcome.stdout
                 evaluation_stderr = evaluation_outcome.stderr
-                score_delta = score - best_score
-                improved = score > best_score
+                score_delta = self._score_delta(score, best_score, config.optimization_direction)
+                improved = self._is_improvement(score, best_score, config.optimization_direction)
                 status = "improved" if improved else "not_improved"
 
                 self._remove_run_docs(docs_dir)
@@ -229,15 +229,17 @@ class ExperimentOrchestrator:
                     evaluation_stdout=evaluation_stdout,
                     evaluation_stderr=evaluation_stderr,
                 )
-                self._ledger.append_entry(
-                    result=result,
-                    target_repo_path=context.target_path,
-                    worktree_path=worktree_path,
-                    evaluation_command=config.evaluation_command,
-                    docs_dir=docs_dir,
-                    bootstrap_artifacts=bootstrap_artifacts,
-                )
-                self._cleanup_experiment_workspace(workspace, worktree_path, branch_name)
+                try:
+                    self._ledger.append_entry(
+                        result=result,
+                        target_repo_path=context.target_path,
+                        worktree_path=worktree_path,
+                        evaluation_command=config.evaluation_command,
+                        docs_dir=docs_dir,
+                        bootstrap_artifacts=bootstrap_artifacts,
+                    )
+                finally:
+                    self._cleanup_experiment_workspace(workspace, worktree_path, branch_name)
                 results.append(result)
 
         return results
@@ -336,8 +338,24 @@ class ExperimentOrchestrator:
         worktree_path: Path,
         branch_name: str,
     ) -> None:
-        workspace.remove_worktree(worktree_path)
-        workspace.delete_branch(branch_name)
+        try:
+            workspace.remove_worktree(worktree_path)
+        finally:
+            workspace.delete_branch(branch_name)
+
+    def _is_improvement(self, score: float, best_score: float, optimization_direction: str) -> bool:
+        if optimization_direction == "minimize":
+            return score < best_score
+        if optimization_direction == "maximize":
+            return score > best_score
+        raise ValueError(f"Unsupported optimization_direction: {optimization_direction}")
+
+    def _score_delta(self, score: float, best_score: float, optimization_direction: str) -> float:
+        if optimization_direction == "minimize":
+            return best_score - score
+        if optimization_direction == "maximize":
+            return score - best_score
+        raise ValueError(f"Unsupported optimization_direction: {optimization_direction}")
 
     def _slugify(self, value: str) -> str:
         slug = re.sub(r"[^A-Za-z0-9._/-]+", "-", value.strip().lower()).strip("-./")

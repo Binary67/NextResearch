@@ -11,6 +11,7 @@ DEFAULT_CONFIG = ExperimentRunConfig(
     objective_name="maximize-evaluation-score",
     evaluation_command="uv run evaluation.py",
     iteration_count=5,
+    optimization_direction="minimize",
     editable_paths=(),
     non_editable_paths=("evaluation.py",
                         "data_processing.py"),
@@ -22,6 +23,7 @@ def main(config: ExperimentRunConfig = DEFAULT_CONFIG) -> None:
     results = orchestrator.run_iterations(config)
 
     for result in results:
+        print()
         print(
             f"{result.run_id} status={result.status} improved={result.improved} "
             f"score={result.score} delta={result.score_delta}"
