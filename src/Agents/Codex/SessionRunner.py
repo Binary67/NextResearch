@@ -4,6 +4,7 @@ import hashlib
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from src.EditPolicy import EditPolicy
 
@@ -36,11 +37,13 @@ class CodexSessionRunner:
         cwd: Path,
         instruction: str,
         edit_policy: EditPolicy | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> CodexSessionRunResult:
         agent = CodexAgent(
             codex_executable=self._codex_executable,
             logs_root=self._logs_root,
             edit_policy=edit_policy,
+            environment=environment,
         )
         try:
             agent.start_session(str(cwd))

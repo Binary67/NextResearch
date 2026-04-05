@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from .Models import ExperimentOrchestratorError
 
@@ -15,13 +16,19 @@ class EvaluationOutcome:
 
 
 class EvaluationRunner:
-    def run(self, cwd: Path, evaluation_command: str) -> EvaluationOutcome:
+    def run(
+        self,
+        cwd: Path,
+        evaluation_command: str,
+        environment: Mapping[str, str] | None = None,
+    ) -> EvaluationOutcome:
         completed = subprocess.run(
             evaluation_command,
             cwd=cwd,
             shell=True,
             text=True,
             capture_output=True,
+            env=dict(environment) if environment is not None else None,
         )
         if completed.returncode != 0:
             stderr = completed.stderr.strip() or completed.stdout.strip()

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.Agents.Codex import CodexAgentError, CodexSessionRunResult, CodexSessionRunner
+from src.Agents.Codex.SessionLog import CodexSessionLog
 from src.EditPolicy import EditPolicy
 
 from .EvaluationRunner import EvaluationRunner
@@ -39,6 +40,8 @@ class ExperimentOrchestrator:
         self._codex_executable = codex_executable
         self._logs_root = Path(logs_root) if logs_root is not None else self._default_logs_root()
         self._logs_root.mkdir(parents=True, exist_ok=True)
+        self._cache_root = self._default_cache_root()
+        self._cache_root.mkdir(parents=True, exist_ok=True)
         self._worktrees_root = Path(worktrees_root) if worktrees_root is not None else self._logs_root / "Worktrees"
         self._worktrees_root.mkdir(parents=True, exist_ok=True)
         self._ledger = ExperimentLedger(self._logs_root / "codex_experiments.jsonl")
@@ -47,6 +50,7 @@ class ExperimentOrchestrator:
             codex_executable=self._codex_executable,
             logs_root=self._logs_root,
         )
+        self._session_log = CodexSessionLog(self._logs_root)
 
     @property
     def logs_root(self) -> Path:
@@ -70,6 +74,7 @@ class ExperimentOrchestrator:
     ) -> BootstrapArtifacts:
         context = self._resolve_repo_context(target_repo_path)
         objective_slug = self._slugify(objective_name)
+        target_environment = self._build_target_environment()
         workspace = GitWorkspaceManager(context.repo_root, self._worktrees_root)
         workspace.ensure_clean_repo()
         evaluation_relative_path = self._resolve_evaluation_relative_path(
@@ -89,7 +94,11 @@ class ExperimentOrchestrator:
         target_cwd = worktree_path / context.target_relative_path
 
         try:
-            running_result = self._codex_session_runner.run(target_cwd, build_running_instructions_prompt())
+            running_result = self._codex_session_runner.run(
+                target_cwd,
+                build_running_instructions_prompt(),
+                environment=target_environment,
+            )
             running_log_path = running_result.session_log_path
 
             evaluation_result = self._codex_session_runner.run(
@@ -98,6 +107,7 @@ class ExperimentOrchestrator:
                     evaluation_command=evaluation_command,
                     evaluation_relative_path=evaluation_relative_path,
                 ),
+                environment=target_environment,
             )
             evaluation_log_path = evaluation_result.session_log_path
         finally:
@@ -119,6 +129,7 @@ class ExperimentOrchestrator:
 
         context = self._resolve_repo_context(config.target_repo_path)
         objective_slug = self._slugify(config.objective_name)
+        target_environment = self._build_target_environment()
         workspace = GitWorkspaceManager(context.repo_root, self._worktrees_root)
         workspace.ensure_clean_repo()
         best_branch_name = f"best/{objective_slug}"
@@ -137,6 +148,7 @@ class ExperimentOrchestrator:
             ref=start_ref,
             evaluation_command=config.evaluation_command,
             workspace=workspace,
+            environment=target_environment,
         )
         results: list[ExperimentIterationResult] = []
 
@@ -157,6 +169,7 @@ class ExperimentOrchestrator:
             session_log_path: Path | None = None
             evaluation_stdout = ""
             evaluation_stderr = ""
+            app_server_file_changes = 0
 
             try:
                 workspace.create_experiment_worktree(branch_name, worktree_path, current_base_commit)
@@ -172,75 +185,95 @@ class ExperimentOrchestrator:
                     run_cwd,
                     self._build_experiment_instruction(config.objective_name, edit_policy),
                     edit_policy=edit_policy,
+                    environment=target_environment,
                 )
                 response_text = session_result.turn_result.response_text
                 session_log_path = session_result.session_log_path
+                app_server_file_changes = len(session_result.turn_result.file_changes)
 
-                evaluation_outcome = self._evaluation_runner.run(run_cwd, config.evaluation_command)
+                evaluation_outcome = self._evaluation_runner.run(
+                    run_cwd,
+                    config.evaluation_command,
+                    environment=target_environment,
+                )
                 score = evaluation_outcome.score
                 evaluation_stdout = evaluation_outcome.stdout
                 evaluation_stderr = evaluation_outcome.stderr
                 score_delta = self._score_delta(score, best_score, config.optimization_direction)
                 improved = self._is_improvement(score, best_score, config.optimization_direction)
                 status = "improved" if improved else "not_improved"
-
-                self._remove_run_docs(docs_dir)
-
-                if improved:
-                    result_commit = workspace.commit_worktree_if_needed(
-                        worktree_path=worktree_path,
-                        branch_name=branch_name,
-                        objective_slug=objective_slug,
-                        run_id=run_id,
-                    )
-                    if result_commit is None:
-                        result_commit = current_base_commit
-                    workspace.force_branch(best_branch_name, result_commit)
-                    best_score = score
-                else:
-                    result_commit = workspace.rev_parse("HEAD", cwd=worktree_path)
             except CodexAgentError as exc:
                 status = "codex_failed"
                 response_text = str(exc)
                 session_log_path = exc.session_log_path or session_log_path
-                self._remove_run_docs(docs_dir)
             except Exception as exc:
                 if isinstance(exc, ExperimentOrchestratorError):
                     status = "evaluation_failed"
-                self._remove_run_docs(docs_dir)
                 if not response_text:
                     response_text = str(exc)
                 if not evaluation_stderr:
                     evaluation_stderr = str(exc)
             finally:
-                result = ExperimentIterationResult(
-                    run_id=run_id,
-                    objective_name=config.objective_name,
-                    branch_name=branch_name,
-                    best_branch_name=best_branch_name,
-                    status=status,
-                    improved=improved,
-                    score=score,
-                    score_delta=score_delta,
-                    base_commit=current_base_commit,
-                    result_commit=result_commit,
-                    session_log_path=session_log_path,
-                    response_text=response_text,
-                    evaluation_stdout=evaluation_stdout,
-                    evaluation_stderr=evaluation_stderr,
-                )
+                self._remove_run_docs(docs_dir)
+
+            if session_log_path is not None:
                 try:
-                    self._ledger.append_entry(
-                        result=result,
-                        target_repo_path=context.target_path,
+                    self._append_post_run_review(
+                        workspace=workspace,
                         worktree_path=worktree_path,
-                        evaluation_command=config.evaluation_command,
-                        docs_dir=docs_dir,
-                        bootstrap_artifacts=bootstrap_artifacts,
+                        session_log_path=session_log_path,
+                        app_server_file_changes=app_server_file_changes,
                     )
-                finally:
-                    self._cleanup_experiment_workspace(workspace, worktree_path, branch_name)
-                results.append(result)
+                except Exception as exc:
+                    message = f"Post-run git review logging failed: {exc}"
+                    response_text = f"{response_text}\n\n{message}".strip() if response_text else message
+                    if evaluation_stderr:
+                        evaluation_stderr = f"{evaluation_stderr.rstrip()}\n{message}"
+                    else:
+                        evaluation_stderr = message
+
+            if improved:
+                result_commit = workspace.commit_worktree_if_needed(
+                    worktree_path=worktree_path,
+                    branch_name=branch_name,
+                    objective_slug=objective_slug,
+                    run_id=run_id,
+                )
+                if result_commit is None:
+                    result_commit = current_base_commit
+                workspace.force_branch(best_branch_name, result_commit)
+                best_score = score
+            elif worktree_path.exists():
+                result_commit = workspace.rev_parse("HEAD", cwd=worktree_path)
+
+            result = ExperimentIterationResult(
+                run_id=run_id,
+                objective_name=config.objective_name,
+                branch_name=branch_name,
+                best_branch_name=best_branch_name,
+                status=status,
+                improved=improved,
+                score=score,
+                score_delta=score_delta,
+                base_commit=current_base_commit,
+                result_commit=result_commit,
+                session_log_path=session_log_path,
+                response_text=response_text,
+                evaluation_stdout=evaluation_stdout,
+                evaluation_stderr=evaluation_stderr,
+            )
+            try:
+                self._ledger.append_entry(
+                    result=result,
+                    target_repo_path=context.target_path,
+                    worktree_path=worktree_path,
+                    evaluation_command=config.evaluation_command,
+                    docs_dir=docs_dir,
+                    bootstrap_artifacts=bootstrap_artifacts,
+                )
+            finally:
+                self._cleanup_experiment_workspace(workspace, worktree_path, branch_name)
+            results.append(result)
 
         return results
 
@@ -314,12 +347,13 @@ class ExperimentOrchestrator:
         ref: str,
         evaluation_command: str,
         workspace: GitWorkspaceManager,
+        environment: dict[str, str],
     ) -> float:
         worktree_path = self._worktrees_root / objective_slug / f"score-{self._timestamp_token()}"
         workspace.create_detached_worktree(worktree_path, ref)
         target_cwd = worktree_path / context.target_relative_path
         try:
-            return self._evaluation_runner.run(target_cwd, evaluation_command).score
+            return self._evaluation_runner.run(target_cwd, evaluation_command, environment=environment).score
         finally:
             workspace.remove_worktree(worktree_path)
 
@@ -369,6 +403,9 @@ class ExperimentOrchestrator:
     def _default_logs_root(self) -> Path:
         return Path(__file__).resolve().parents[2] / "Logs"
 
+    def _default_cache_root(self) -> Path:
+        return Path(__file__).resolve().parents[2] / "Cache"
+
     def _build_experiment_instruction(self, objective_name: str, edit_policy: EditPolicy) -> str:
         return f"{edit_policy.prompt_prefix()}\n\n{build_experiment_prompt(objective_name=objective_name)}"
 
@@ -379,3 +416,34 @@ class ExperimentOrchestrator:
         print(f"Codex edit policy mode={edit_policy.mode_label}")
         print(f"Codex editable_paths={editable_text}")
         print(f"Codex non_editable_paths={non_editable_text}")
+
+    def _build_target_environment(self) -> dict[str, str]:
+        environment = os.environ.copy()
+        for key in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH", "CONDA_PREFIX"):
+            environment.pop(key, None)
+
+        uv_cache_dir = self._cache_root / "uv"
+        uv_cache_dir.mkdir(parents=True, exist_ok=True)
+        environment["UV_CACHE_DIR"] = str(uv_cache_dir)
+        return environment
+
+    def _append_post_run_review(
+        self,
+        workspace: GitWorkspaceManager,
+        worktree_path: Path,
+        session_log_path: Path,
+        app_server_file_changes: int,
+    ) -> None:
+        if not worktree_path.exists():
+            return
+
+        workspace.run_git(worktree_path, "add", "-A")
+        git_diff = workspace.git_output(worktree_path, "diff", "--cached", "--binary", "HEAD")
+        changed_paths = workspace.git_output(worktree_path, "diff", "--cached", "--name-only", "HEAD")
+        git_tracked_changes = len([line for line in changed_paths.splitlines() if line.strip()])
+        self._session_log.append_post_run_review(
+            session_log_path,
+            app_server_file_changes=app_server_file_changes,
+            git_tracked_changes=git_tracked_changes,
+            git_diff=git_diff,
+        )

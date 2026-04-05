@@ -7,7 +7,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from src.EditPolicy import EditPolicy
 
@@ -167,6 +167,7 @@ class CodexAgent:
         client_version: str = "0.1.0",
         logs_root: Path | str | None = None,
         edit_policy: EditPolicy | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
         self._codex_executable = codex_executable or self._resolve_codex_executable()
         self._client_name = client_name
@@ -174,6 +175,7 @@ class CodexAgent:
         self._client_version = client_version
         self._session_log = CodexSessionLog(logs_root)
         self._edit_policy = edit_policy
+        self._environment = dict(environment) if environment is not None else None
         self._process: subprocess.Popen[str] | None = None
         self._next_request_id = 1
         self._pending_messages: deque[dict[str, Any]] = deque()
@@ -202,6 +204,7 @@ class CodexAgent:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=self._environment,
         )
 
         initialize_result = self._request(
@@ -418,8 +421,6 @@ class CodexAgent:
                             file_change_state.update_from_item(item)
                             if file_change_state.status in {"failed", "declined"}:
                                 collector.note_error(f"File change item ended with status {file_change_state.status}.")
-                            for file_change_entry in file_change_state.to_entries():
-                                self._session_log.append_file_change_completed(thread_id, file_change_entry)
                     continue
 
                 if method == "turn/completed":

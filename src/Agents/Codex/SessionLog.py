@@ -83,25 +83,8 @@ class CodexSessionLog:
             ],
         )
 
-    def append_file_change_completed(self, thread_id: str, file_change: FileChangeLogEntry) -> Path:
-        changed_line = file_change.path
-        if file_change.kind:
-            changed_line = f"{changed_line} ({file_change.kind})"
-
-        diff_text = file_change.diff.strip() or "(no diff available)"
-        if diff_text != "(no diff available)":
-            diff_text = f"```diff\n{diff_text.rstrip()}\n```"
-
-        return self._append_sections(
-            self.path_for_thread(thread_id),
-            [
-                self._single_line_section("File Changed", changed_line),
-                self._multi_line_section("Code Diff", diff_text),
-            ],
-        )
-
     def append_turn_finished(self, thread_id: str, turn: TurnLogEntry, status: str) -> Path:
-        work_summary = f"Ran {len(turn.commands)} command(s). Changed {len(turn.file_changes)} file(s)."
+        work_summary = f"Ran {len(turn.commands)} command(s)."
         sections: list[tuple[str, str]] = [
             self._single_line_section("Turn Status", status),
             self._single_line_section("Work Performed", work_summary),
@@ -110,9 +93,6 @@ class CodexSessionLog:
         if not turn.commands:
             sections.append(self._single_line_section("Commands Run", "None"))
 
-        if not turn.file_changes:
-            sections.append(self._single_line_section("File Changed", "None"))
-
         if turn.errors_and_recoveries:
             errors_text = "\n".join(f"- {entry}" for entry in turn.errors_and_recoveries)
             sections.append(self._multi_line_section("Errors And Recoveries", errors_text))
@@ -120,6 +100,26 @@ class CodexSessionLog:
             sections.append(self._single_line_section("Errors And Recoveries", "None"))
 
         return self._append_sections(self.path_for_thread(thread_id), sections)
+
+    def append_post_run_review(
+        self,
+        path: Path,
+        app_server_file_changes: int,
+        git_tracked_changes: int,
+        git_diff: str,
+    ) -> Path:
+        diff_text = git_diff.strip() or "(no git-tracked changes)"
+        if diff_text != "(no git-tracked changes)":
+            diff_text = f"```diff\n{diff_text.rstrip()}\n```"
+
+        return self._append_sections(
+            path,
+            [
+                self._single_line_section("App-Server Reported File Changes", str(app_server_file_changes)),
+                self._single_line_section("Git-Tracked Changes Before Cleanup", str(git_tracked_changes)),
+                self._multi_line_section("Git Diff", diff_text),
+            ],
+        )
 
     def append_edit_policy(
         self,
