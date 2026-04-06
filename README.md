@@ -16,6 +16,9 @@ This repository is currently closer to a library/prototype than a polished end-u
 - Uses Codex to generate bootstrap artifacts for the target repository:
   - `RUNNING_INSTRUCTIONS.md`
   - `EVALUATION_SPEC.md`
+- Builds deterministic per-run context documents:
+  - `BASELINE_STATE.md`
+  - `EXPERIMENT_HISTORY.md`
 - Creates an isolated worktree and experiment branch for each iteration.
 - Asks Codex to make one scoped improvement attempt.
 - Runs an external evaluation command and parses the score.

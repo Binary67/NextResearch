@@ -42,6 +42,8 @@ You are running one automated optimization attempt for the objective "{objective
 Before making changes:
 - Read `{running_instructions_path}`.
 - Read `{evaluation_spec_path}`.
+- Read `{baseline_state_path}`.
+- Read `{experiment_history_path}`.
 
 Your job:
 1. Analyze the relevant code.

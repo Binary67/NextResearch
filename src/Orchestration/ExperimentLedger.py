@@ -23,6 +23,7 @@ class ExperimentLedger:
         target_repo_path: Path,
         worktree_path: Path,
         evaluation_command: str,
+        optimization_direction: str,
         docs_dir: Path,
         bootstrap_artifacts: BootstrapArtifacts,
     ) -> None:
@@ -40,6 +41,7 @@ class ExperimentLedger:
             "score": result.score,
             "score_delta": result.score_delta,
             "evaluation_command": evaluation_command,
+            "optimization_direction": optimization_direction,
             "session_log_path": str(result.session_log_path) if result.session_log_path else None,
             "running_instructions_path": str(docs_dir / "RUNNING_INSTRUCTIONS.md"),
             "evaluation_spec_path": str(docs_dir / "EVALUATION_SPEC.md"),
