@@ -68,20 +68,21 @@ class EditPolicy:
         except ValueError as exc:
             raise ValueError(f"session_cwd must stay within repo_root: {session_cwd}") from exc
 
+        editable_candidates = cls._validate_rule_paths("editable_paths", editable_paths)
+        non_editable_candidates = cls._validate_rule_paths("non_editable_paths", non_editable_paths)
+        non_readable_candidates = cls._validate_rule_paths("non_readable_paths", non_readable_paths)
+
         allow_rules = tuple(
             cls._build_rule(root, raw_path)
-            for raw_path in editable_paths
-            if isinstance(raw_path, str) and raw_path.strip()
+            for raw_path in editable_candidates
         )
         deny_rules = tuple(
             cls._build_rule(root, raw_path)
-            for raw_path in non_editable_paths
-            if isinstance(raw_path, str) and raw_path.strip()
+            for raw_path in non_editable_candidates
         )
         hidden_rules = tuple(
             cls._build_rule(root, raw_path)
-            for raw_path in non_readable_paths
-            if isinstance(raw_path, str) and raw_path.strip()
+            for raw_path in non_readable_candidates
         )
         return cls(
             repo_root=root,
@@ -207,6 +208,23 @@ class EditPolicy:
             seen.add(key)
             decisions.append(decision)
         return decisions
+
+    @staticmethod
+    def _validate_rule_paths(field_name: str, raw_paths: tuple[str, ...]) -> tuple[str, ...]:
+        if isinstance(raw_paths, str):
+            raise TypeError(
+                f"{field_name} must be a tuple[str, ...] or list[str], not a string."
+            )
+
+        normalized: list[str] = []
+        for raw_path in raw_paths:
+            if not isinstance(raw_path, str):
+                raise TypeError(f"{field_name} entries must be strings; got {type(raw_path).__name__}.")
+            stripped = raw_path.strip()
+            if not stripped:
+                raise ValueError(f"{field_name} entries must be non-empty strings.")
+            normalized.append(stripped)
+        return tuple(normalized)
 
     @classmethod
     def _build_rule(cls, repo_root: Path, raw_path: str) -> EditPolicyRule:

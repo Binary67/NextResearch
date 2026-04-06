@@ -12,9 +12,9 @@ DEFAULT_CONFIG = ExperimentRunConfig(
     evaluation_command="uv run evaluation.py",
     iteration_count=5,
     optimization_direction="minimize",
-    editable_paths=(),
-    non_editable_paths=("data_processing.py",),
-    non_readable_paths=("evaluation.py",),
+    editable_paths=("feature_engineering.py", "train.py"),
+    non_editable_paths=(),
+    non_readable_paths=("evaluation.py", "data_processing.py"),
 )
 
 
