@@ -64,6 +64,9 @@ The run configuration includes:
 - `optimization_direction`
 - optional `evaluation_file_path`
 - optional `baseline_branch`
+- optional `editable_paths`
+- optional `non_editable_paths`
+- optional `non_readable_paths`
 
 Prompt wording is loaded from the top-level `PromptTemplates.md` file.
 
@@ -109,12 +112,14 @@ for result in results:
 2. Verify the repository is clean.
 3. Bootstrap repo-specific instructions using Codex.
 4. Compute the current best score from the starting reference.
-5. Create an isolated experiment branch and worktree.
-6. Ask Codex to make one scoped improvement.
-7. Run the evaluator.
-8. If the score improves, commit the change and update `best/<objective>`.
-9. Append the run result to the experiment ledger.
-10. Clean up the temporary worktree and branch.
+5. Create an isolated experiment branch and full orchestrator worktree.
+6. Create a restricted sparse worktree for the Codex agent.
+7. Ask Codex to make one scoped improvement in the restricted worktree.
+8. Apply the resulting patch to the full orchestrator worktree.
+9. Run the evaluator in the full orchestrator worktree.
+10. If the score improves, commit the change and update `best/<objective>`.
+11. Append the run result to the experiment ledger.
+12. Clean up the temporary worktrees and branch.
 
 ## Outputs
 

@@ -38,12 +38,14 @@ class CodexSessionRunner:
         instruction: str,
         edit_policy: EditPolicy | None = None,
         environment: Mapping[str, str] | None = None,
+        blocked_commands: tuple[str, ...] = (),
     ) -> CodexSessionRunResult:
         agent = CodexAgent(
             codex_executable=self._codex_executable,
             logs_root=self._logs_root,
             edit_policy=edit_policy,
             environment=environment,
+            blocked_commands=blocked_commands,
         )
         try:
             agent.start_session(str(cwd))
@@ -53,7 +55,7 @@ class CodexSessionRunner:
             if edit_policy is not None:
                 current_snapshot = self._snapshot_git_changes(cwd)
                 changed_paths = self._collect_session_changed_paths(baseline_snapshot, current_snapshot)
-                violations = edit_policy.find_disallowed_paths(changed_paths)
+                violations = edit_policy.find_disallowed_write_paths(changed_paths)
                 if violations:
                     violation_message = "; ".join(
                         f"{entry.display_path}: {entry.reason}" for entry in violations

@@ -46,6 +46,7 @@ class ExperimentRunConfig:
     baseline_branch: str | None = None
     editable_paths: tuple[str, ...] = ()
     non_editable_paths: tuple[str, ...] = ()
+    non_readable_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.optimization_direction not in {"minimize", "maximize"}:

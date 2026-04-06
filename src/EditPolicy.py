@@ -46,6 +46,7 @@ class EditPolicy:
     session_cwd: Path
     allow_rules: tuple[EditPolicyRule, ...]
     deny_rules: tuple[EditPolicyRule, ...]
+    hidden_rules: tuple[EditPolicyRule, ...]
 
     @classmethod
     def from_paths(
@@ -54,6 +55,7 @@ class EditPolicy:
         session_cwd: Path | str | None = None,
         editable_paths: tuple[str, ...] = (),
         non_editable_paths: tuple[str, ...] = (),
+        non_readable_paths: tuple[str, ...] = (),
     ) -> EditPolicy:
         root = Path(repo_root).expanduser().resolve()
         if not root.exists():
@@ -76,7 +78,18 @@ class EditPolicy:
             for raw_path in non_editable_paths
             if isinstance(raw_path, str) and raw_path.strip()
         )
-        return cls(repo_root=root, session_cwd=cwd, allow_rules=allow_rules, deny_rules=deny_rules)
+        hidden_rules = tuple(
+            cls._build_rule(root, raw_path)
+            for raw_path in non_readable_paths
+            if isinstance(raw_path, str) and raw_path.strip()
+        )
+        return cls(
+            repo_root=root,
+            session_cwd=cwd,
+            allow_rules=allow_rules,
+            deny_rules=deny_rules,
+            hidden_rules=hidden_rules,
+        )
 
     @property
     def mode_label(self) -> str:
@@ -90,20 +103,24 @@ class EditPolicy:
     def non_editable_rule_paths(self) -> tuple[str, ...]:
         return tuple(rule.display_path for rule in self.deny_rules)
 
+    def non_readable_rule_paths(self) -> tuple[str, ...]:
+        return tuple(rule.display_path for rule in self.hidden_rules)
+
     def prompt_prefix(self) -> str:
         editable_text = ", ".join(self.editable_rule_paths()) or "all repo paths"
         non_editable_text = ", ".join(self.non_editable_rule_paths()) or "none"
-        return "\n".join(
-            [
-                "Edit policy for this run:",
-                f"- Mode: {self.mode_label}",
-                f"- Editable paths: {editable_text}",
-                f"- Non-editable paths: {non_editable_text}",
-                "- If a needed change falls outside the editable set, explain it instead of editing it.",
-            ]
-        )
+        lines = [
+            "Edit policy for this run:",
+            f"- Mode: {self.mode_label}",
+            f"- Editable paths: {editable_text}",
+            f"- Non-editable paths: {non_editable_text}",
+        ]
+        if self.hidden_rules:
+            lines.append("- Some repository paths are hidden from this run and unavailable to read or modify.")
+        lines.append("- If a needed change falls outside the editable set, explain it instead of editing it.")
+        return "\n".join(lines)
 
-    def evaluate_path(self, path: str | Path) -> EditPolicyDecision:
+    def evaluate_read_path(self, path: str | Path) -> EditPolicyDecision:
         requested_path = str(path)
         candidate_info = self._normalize_candidate_path(self.repo_root, self.session_cwd, path)
         if candidate_info is None:
@@ -116,6 +133,32 @@ class EditPolicy:
             )
         normalized_path, display_path = candidate_info
 
+        hidden_rule = self._match_rule(normalized_path, self.hidden_rules)
+        if hidden_rule is not None:
+            return EditPolicyDecision(
+                requested_path=requested_path,
+                normalized_path=normalized_path,
+                display_path_value=display_path,
+                allowed=False,
+                reason=f"path matches non_readable_paths rule `{hidden_rule.display_path}`",
+            )
+
+        return EditPolicyDecision(
+            requested_path=requested_path,
+            normalized_path=normalized_path,
+            display_path_value=display_path,
+            allowed=True,
+            reason="path is readable",
+        )
+
+    def evaluate_write_path(self, path: str | Path) -> EditPolicyDecision:
+        read_decision = self.evaluate_read_path(path)
+        if not read_decision.allowed:
+            return read_decision
+
+        requested_path = str(path)
+        normalized_path = read_decision.normalized_path
+        display_path = read_decision.display_path_value
         deny_rule = self._match_rule(normalized_path, self.deny_rules)
         if deny_rule is not None:
             return EditPolicyDecision(
@@ -153,11 +196,11 @@ class EditPolicy:
             reason=f"path matches editable_paths rule `{allow_rule.display_path}`",
         )
 
-    def find_disallowed_paths(self, paths: list[str]) -> list[EditPolicyDecision]:
+    def find_disallowed_write_paths(self, paths: list[str]) -> list[EditPolicyDecision]:
         decisions: list[EditPolicyDecision] = []
         seen: set[str] = set()
         for path in paths:
-            decision = self.evaluate_path(path)
+            decision = self.evaluate_write_path(path)
             key = f"{decision.display_path}|{decision.reason}"
             if decision.allowed or key in seen:
                 continue

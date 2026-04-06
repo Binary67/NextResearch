@@ -168,6 +168,7 @@ class CodexAgent:
         logs_root: Path | str | None = None,
         edit_policy: EditPolicy | None = None,
         environment: Mapping[str, str] | None = None,
+        blocked_commands: tuple[str, ...] = (),
     ) -> None:
         self._codex_executable = codex_executable or self._resolve_codex_executable()
         self._client_name = client_name
@@ -176,6 +177,7 @@ class CodexAgent:
         self._session_log = CodexSessionLog(logs_root)
         self._edit_policy = edit_policy
         self._environment = dict(environment) if environment is not None else None
+        self._blocked_commands = tuple(entry for entry in blocked_commands if entry)
         self._process: subprocess.Popen[str] | None = None
         self._next_request_id = 1
         self._pending_messages: deque[dict[str, Any]] = deque()
@@ -242,6 +244,7 @@ class CodexAgent:
                 self._edit_policy.mode_label,
                 list(self._edit_policy.editable_rule_paths()),
                 list(self._edit_policy.non_editable_rule_paths()),
+                list(self._edit_policy.non_readable_rule_paths()),
             )
 
     def end_session(self) -> None:
@@ -614,7 +617,8 @@ class CodexAgent:
             return True
 
         if method == "item/commandExecution/requestApproval":
-            self._write_message({"id": message["id"], "result": {"decision": "accept"}})
+            response = self._build_command_approval_response(params, collector)
+            self._write_message({"id": message["id"], "result": response})
             return True
 
         return False
@@ -633,7 +637,7 @@ class CodexAgent:
             self._record_policy_denial("(unknown path)", reason, collector)
             return {"decision": "decline"}
 
-        violations = self._edit_policy.find_disallowed_paths(requested_paths)
+        violations = self._edit_policy.find_disallowed_write_paths(requested_paths)
         if violations:
             for violation in violations:
                 self._record_policy_denial(violation.display_path, violation.reason, collector)
@@ -661,7 +665,17 @@ class CodexAgent:
         if isinstance(requested_file_system, dict):
             requested_read = requested_file_system.get("read")
             if isinstance(requested_read, list):
-                granted_file_system["read"] = [value for value in requested_read if isinstance(value, str)]
+                granted_read: list[str] = []
+                for value in requested_read:
+                    if not isinstance(value, str):
+                        continue
+                    decision = self._edit_policy.evaluate_read_path(value)
+                    if decision.allowed:
+                        granted_read.append(str(Path(value).expanduser().resolve(strict=False)))
+                    else:
+                        self._record_policy_denial(decision.display_path, decision.reason, collector)
+                if granted_read:
+                    granted_file_system["read"] = granted_read
 
             requested_write = requested_file_system.get("write")
             if isinstance(requested_write, list):
@@ -669,7 +683,7 @@ class CodexAgent:
                 for value in requested_write:
                     if not isinstance(value, str):
                         continue
-                    decision = self._edit_policy.evaluate_path(value)
+                    decision = self._edit_policy.evaluate_write_path(value)
                     if decision.allowed:
                         granted_write.append(str(Path(value).expanduser().resolve(strict=False)))
                     else:
@@ -683,6 +697,23 @@ class CodexAgent:
             granted_permissions["network"] = requested_network
 
         return {"permissions": granted_permissions, "scope": "turn"}
+
+    def _build_command_approval_response(
+        self,
+        params: dict[str, Any],
+        collector: _TurnLogCollector | None,
+    ) -> dict[str, str]:
+        command = self._extract_requested_command(params, collector)
+        if not command:
+            return {"decision": "accept"}
+
+        normalized = self._normalize_command_text(command)
+        for blocked_command in self._blocked_commands:
+            if self._normalize_command_text(blocked_command) in normalized:
+                reason = f"command matches blocked command rule `{blocked_command}`"
+                self._record_command_denial(command, reason, collector)
+                return {"decision": "decline"}
+        return {"decision": "accept"}
 
     def _extract_requested_file_change_paths(
         self,
@@ -719,8 +750,39 @@ class CodexAgent:
         reason: str,
         collector: _TurnLogCollector | None,
     ) -> None:
-        message = f"Declined write to `{path}`: {reason}."
+        message = f"Declined access to `{path}`: {reason}."
         if collector is not None:
             collector.note_error(message)
         if self._thread_id is not None:
             self._session_log.append_policy_denial(self._thread_id, path, reason)
+
+    def _record_command_denial(
+        self,
+        command: str,
+        reason: str,
+        collector: _TurnLogCollector | None,
+    ) -> None:
+        message = f"Declined command `{command}`: {reason}."
+        if collector is not None:
+            collector.note_error(message)
+        if self._thread_id is not None:
+            self._session_log.append_command_denial(self._thread_id, command, reason)
+
+    def _extract_requested_command(
+        self,
+        params: dict[str, Any],
+        collector: _TurnLogCollector | None,
+    ) -> str:
+        command = params.get("command")
+        if isinstance(command, str) and command:
+            return command
+
+        item_id = params.get("itemId")
+        if isinstance(item_id, str) and collector is not None:
+            state = collector.command_states.get(item_id)
+            if state is not None and state.command:
+                return state.command
+        return ""
+
+    def _normalize_command_text(self, value: str) -> str:
+        return value.casefold()

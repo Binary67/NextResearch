@@ -130,10 +130,14 @@ class CodexSessionLog:
         mode: str,
         editable_paths: list[str],
         non_editable_paths: list[str],
+        non_readable_paths: list[str],
     ) -> Path:
         editable_text = "\n".join(f"- {path}" for path in editable_paths) if editable_paths else "All repo paths\n"
         non_editable_text = (
             "\n".join(f"- {path}" for path in non_editable_paths) if non_editable_paths else "None\n"
+        )
+        non_readable_text = (
+            "\n".join(f"- {path}" for path in non_readable_paths) if non_readable_paths else "None\n"
         )
         return self._append_sections(
             self.path_for_thread(thread_id),
@@ -141,6 +145,7 @@ class CodexSessionLog:
                 self._single_line_section("Edit Policy Mode", mode),
                 self._multi_line_section("Editable Paths", editable_text),
                 self._multi_line_section("Non-Editable Paths", non_editable_text),
+                self._multi_line_section("Non-Readable Paths", non_readable_text),
             ],
         )
 
@@ -157,6 +162,15 @@ class CodexSessionLog:
         return self._append_sections(
             self.path_for_thread(thread_id),
             [self._multi_line_section("Policy Violation", message)],
+        )
+
+    def append_command_denial(self, thread_id: str, command: str, reason: str) -> Path:
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [
+                self._single_line_section("Command Denial", command),
+                self._single_line_section("Command Reason", reason),
+            ],
         )
 
     def _append_sections(self, path: Path, sections: list[tuple[str, str]]) -> Path:

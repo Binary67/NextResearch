@@ -157,9 +157,12 @@ class ExperimentOrchestrator:
             current_base_commit = workspace.rev_parse(current_base_ref)
             run_id = self._timestamp_token()
             branch_name = f"exp/{objective_slug}/{run_id}"
-            worktree_path = self._worktrees_root / objective_slug / run_id
-            run_cwd = worktree_path / context.target_relative_path
-            docs_dir = run_cwd / ".nextresearch"
+            run_root = self._worktrees_root / objective_slug / run_id
+            orchestrator_worktree_path = run_root / "orchestrator"
+            agent_worktree_path = run_root / "agent"
+            orchestrator_cwd = orchestrator_worktree_path / context.target_relative_path
+            agent_cwd = agent_worktree_path / context.target_relative_path
+            docs_dir = agent_cwd / ".nextresearch"
             score: float | None = None
             score_delta: float | None = None
             improved = False
@@ -172,27 +175,49 @@ class ExperimentOrchestrator:
             app_server_file_changes = 0
 
             try:
-                workspace.create_experiment_worktree(branch_name, worktree_path, current_base_commit)
-                self._write_run_docs(docs_dir, bootstrap_artifacts)
-                edit_policy = EditPolicy.from_paths(
-                    worktree_path,
-                    session_cwd=run_cwd,
-                    editable_paths=config.editable_paths,
-                    non_editable_paths=config.non_editable_paths,
+                workspace.create_experiment_worktree(branch_name, orchestrator_worktree_path, current_base_commit)
+                orchestrator_edit_policy = self._build_edit_policy(
+                    orchestrator_worktree_path,
+                    orchestrator_cwd,
+                    config,
                 )
-                self._print_edit_policy(edit_policy)
+                sparse_patterns = self._build_agent_sparse_patterns(
+                    workspace,
+                    orchestrator_worktree_path,
+                    orchestrator_edit_policy,
+                    context.target_relative_path,
+                )
+                workspace.create_sparse_detached_worktree(
+                    agent_worktree_path,
+                    current_base_commit,
+                    sparse_patterns,
+                )
+                agent_cwd.mkdir(parents=True, exist_ok=True)
+                self._write_run_docs(docs_dir, bootstrap_artifacts)
+                agent_edit_policy = self._build_edit_policy(
+                    agent_worktree_path,
+                    agent_cwd,
+                    config,
+                )
+                self._print_edit_policy(agent_edit_policy)
                 session_result = self._codex_session_runner.run(
-                    run_cwd,
-                    self._build_experiment_instruction(config.objective_name, edit_policy),
-                    edit_policy=edit_policy,
+                    agent_cwd,
+                    self._build_experiment_instruction(config.objective_name, agent_edit_policy),
+                    edit_policy=agent_edit_policy,
                     environment=target_environment,
+                    blocked_commands=self._blocked_commands_for_run(config),
                 )
                 response_text = session_result.turn_result.response_text
                 session_log_path = session_result.session_log_path
                 app_server_file_changes = len(session_result.turn_result.file_changes)
+                self._remove_run_docs(docs_dir)
+                workspace.apply_patch(
+                    orchestrator_worktree_path,
+                    workspace.diff_against_ref(agent_worktree_path, current_base_commit),
+                )
 
                 evaluation_outcome = self._evaluation_runner.run(
-                    run_cwd,
+                    orchestrator_cwd,
                     config.evaluation_command,
                     environment=target_environment,
                 )
@@ -206,9 +231,17 @@ class ExperimentOrchestrator:
                 status = "codex_failed"
                 response_text = str(exc)
                 session_log_path = exc.session_log_path or session_log_path
-            except Exception as exc:
-                if isinstance(exc, ExperimentOrchestratorError):
+            except ExperimentOrchestratorError as exc:
+                message = str(exc)
+                if message.startswith("Evaluation command failed") or (
+                    "Evaluation command must print a numeric score" in message
+                ) or ("Evaluation command did not print a score" in message):
                     status = "evaluation_failed"
+                if not response_text:
+                    response_text = message
+                if not evaluation_stderr:
+                    evaluation_stderr = message
+            except Exception as exc:
                 if not response_text:
                     response_text = str(exc)
                 if not evaluation_stderr:
@@ -220,7 +253,7 @@ class ExperimentOrchestrator:
                 try:
                     self._append_post_run_review(
                         workspace=workspace,
-                        worktree_path=worktree_path,
+                        worktree_path=orchestrator_worktree_path,
                         session_log_path=session_log_path,
                         app_server_file_changes=app_server_file_changes,
                     )
@@ -234,7 +267,7 @@ class ExperimentOrchestrator:
 
             if improved:
                 result_commit = workspace.commit_worktree_if_needed(
-                    worktree_path=worktree_path,
+                    worktree_path=orchestrator_worktree_path,
                     branch_name=branch_name,
                     objective_slug=objective_slug,
                     run_id=run_id,
@@ -243,8 +276,8 @@ class ExperimentOrchestrator:
                     result_commit = current_base_commit
                 workspace.force_branch(best_branch_name, result_commit)
                 best_score = score
-            elif worktree_path.exists():
-                result_commit = workspace.rev_parse("HEAD", cwd=worktree_path)
+            elif orchestrator_worktree_path.exists():
+                result_commit = workspace.rev_parse("HEAD", cwd=orchestrator_worktree_path)
 
             result = ExperimentIterationResult(
                 run_id=run_id,
@@ -266,13 +299,18 @@ class ExperimentOrchestrator:
                 self._ledger.append_entry(
                     result=result,
                     target_repo_path=context.target_path,
-                    worktree_path=worktree_path,
+                    worktree_path=orchestrator_worktree_path,
                     evaluation_command=config.evaluation_command,
                     docs_dir=docs_dir,
                     bootstrap_artifacts=bootstrap_artifacts,
                 )
             finally:
-                self._cleanup_experiment_workspace(workspace, worktree_path, branch_name)
+                self._cleanup_experiment_workspaces(
+                    workspace,
+                    orchestrator_worktree_path,
+                    agent_worktree_path,
+                    branch_name,
+                )
             results.append(result)
 
         return results
@@ -366,16 +404,20 @@ class ExperimentOrchestrator:
         if docs_dir.exists():
             shutil.rmtree(docs_dir)
 
-    def _cleanup_experiment_workspace(
+    def _cleanup_experiment_workspaces(
         self,
         workspace: GitWorkspaceManager,
-        worktree_path: Path,
+        orchestrator_worktree_path: Path,
+        agent_worktree_path: Path,
         branch_name: str,
     ) -> None:
         try:
-            workspace.remove_worktree(worktree_path)
+            workspace.remove_worktree(agent_worktree_path)
         finally:
-            workspace.delete_branch(branch_name)
+            try:
+                workspace.remove_worktree(orchestrator_worktree_path)
+            finally:
+                workspace.delete_branch(branch_name)
 
     def _is_improvement(self, score: float, best_score: float, optimization_direction: str) -> bool:
         if optimization_direction == "minimize":
@@ -412,10 +454,12 @@ class ExperimentOrchestrator:
     def _print_edit_policy(self, edit_policy: EditPolicy) -> None:
         editable_text = ", ".join(edit_policy.editable_rule_paths()) or "all repo paths"
         non_editable_text = ", ".join(edit_policy.non_editable_rule_paths()) or "none"
+        non_readable_text = ", ".join(edit_policy.non_readable_rule_paths()) or "none"
         print(f"Codex edit policy repo_root={edit_policy.repo_root}")
         print(f"Codex edit policy mode={edit_policy.mode_label}")
         print(f"Codex editable_paths={editable_text}")
         print(f"Codex non_editable_paths={non_editable_text}")
+        print(f"Codex non_readable_paths={non_readable_text}")
 
     def _build_target_environment(self) -> dict[str, str]:
         environment = os.environ.copy()
@@ -484,3 +528,52 @@ class ExperimentOrchestrator:
             text_paths.append(path)
 
         return text_paths
+
+    def _build_edit_policy(
+        self,
+        worktree_path: Path,
+        session_cwd: Path,
+        config: ExperimentRunConfig,
+    ) -> EditPolicy:
+        return EditPolicy.from_paths(
+            worktree_path,
+            session_cwd=session_cwd,
+            editable_paths=config.editable_paths,
+            non_editable_paths=config.non_editable_paths,
+            non_readable_paths=config.non_readable_paths,
+        )
+
+    def _build_agent_sparse_patterns(
+        self,
+        workspace: GitWorkspaceManager,
+        orchestrator_worktree_path: Path,
+        edit_policy: EditPolicy,
+        target_relative_path: Path,
+    ) -> list[str]:
+        patterns = [
+            path
+            for path in workspace.list_tracked_paths(orchestrator_worktree_path)
+            if edit_policy.evaluate_read_path(orchestrator_worktree_path / path).allowed
+        ]
+        docs_pattern = self._docs_sparse_pattern(target_relative_path)
+        if docs_pattern not in patterns:
+            patterns.append(docs_pattern)
+        return patterns
+
+    def _docs_sparse_pattern(self, target_relative_path: Path) -> str:
+        target_prefix = target_relative_path.as_posix().strip("/")
+        if not target_prefix or target_prefix == ".":
+            return ".nextresearch/"
+        return f"{target_prefix}/.nextresearch/"
+
+    def _blocked_commands_for_run(self, config: ExperimentRunConfig) -> tuple[str, ...]:
+        blocked_commands: list[str] = [config.evaluation_command]
+        for path in config.non_readable_paths:
+            stripped = path.strip()
+            if not stripped:
+                continue
+            blocked_commands.append(stripped)
+            name = Path(stripped).name
+            if name and name != stripped:
+                blocked_commands.append(name)
+        return tuple(dict.fromkeys(blocked_commands))
