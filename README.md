@@ -20,7 +20,7 @@ This repository is currently closer to a library/prototype than a polished end-u
   - `BASELINE_STATE.md`
   - `EXPERIMENT_HISTORY.md`
 - Creates an isolated worktree and experiment branch for each iteration.
-- Asks Codex to make one scoped improvement attempt.
+- Asks Codex to make one coherent improvement attempt, which may include coordinated edits across the allowed files.
 - Runs an external evaluation command and parses the score.
 - Keeps the best result on `best/<objective>`.
 - Writes a JSONL experiment ledger and markdown session logs under `Logs/`.
@@ -117,7 +117,7 @@ for result in results:
 4. Compute the current best score from the starting reference.
 5. Create an isolated experiment branch and full orchestrator worktree.
 6. Create a restricted sparse worktree for the Codex agent.
-7. Ask Codex to make one scoped improvement in the restricted worktree.
+7. Ask Codex to make one coherent improvement in the restricted worktree, including coordinated multi-file edits when one strategy needs them.
 8. Apply the resulting patch to the full orchestrator worktree.
 9. Run the evaluator in the full orchestrator worktree.
 10. If the score improves, commit the change and update `best/<objective>`.

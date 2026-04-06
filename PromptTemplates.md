@@ -46,15 +46,18 @@ Before making changes:
 - Read `{experiment_history_path}`.
 
 Your job:
-1. Analyze the relevant code.
-2. Choose one concrete improvement likely to improve the objective.
-3. Implement only that improvement.
-4. If needed, run only sanity-check commands that are allowed by `RUNNING_INSTRUCTIONS.md`.
+1. Analyze the relevant code across the editable files.
+2. Choose one coherent improvement strategy likely to improve the objective.
+3. Implement the smallest complete set of changes needed for that strategy.
+4. You may edit one or multiple allowed files when those edits are directly connected to the same strategy.
+5. If the strategy depends on coordinated feature and training changes, make those changes together instead of stopping at an isolated patch.
+6. If needed, run only sanity-check commands that are allowed by `RUNNING_INSTRUCTIONS.md`.
 
 Constraints:
 - Do not read or modify the real evaluator implementation.
 - Do not edit files under `.nextresearch`.
-- Keep the change scoped.
+- Keep the attempt focused on one strategy.
+- Do not bundle unrelated tweaks.
 - Avoid speculative refactors.
 
-Reply with a concise summary of what you changed and why it should improve the objective.
+Reply with a concise summary of the strategy you implemented, which files you changed, and why the combined change should improve the objective.
