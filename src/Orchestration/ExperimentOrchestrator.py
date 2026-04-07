@@ -209,7 +209,10 @@ class ExperimentOrchestrator:
         status = "failed"
         result_commit: str | None = None
         response_text = ""
+        attempted_change = ""
         session_log_path: Path | None = None
+        changed_files: tuple[str, ...] = ()
+        run_notes: tuple[str, ...] = ()
         evaluation_stdout = ""
         evaluation_stderr = ""
         app_server_file_changes = 0
@@ -260,7 +263,10 @@ class ExperimentOrchestrator:
                 blocked_commands=blocked_commands_for_run(config),
             )
             response_text = session_result.turn_result.response_text
+            attempted_change = self._build_attempted_change(session_result.turn_result.response_text)
             session_log_path = session_result.session_log_path
+            changed_files = self._build_changed_files(session_result.turn_result.file_changes)
+            run_notes = tuple(session_result.turn_result.errors_and_recoveries)
             app_server_file_changes = len(session_result.turn_result.file_changes)
             remove_run_docs(docs_dir)
             workspace.apply_patch(
@@ -344,6 +350,9 @@ class ExperimentOrchestrator:
             result_commit=result_commit,
             session_log_path=session_log_path,
             response_text=response_text,
+            attempted_change=attempted_change,
+            changed_files=changed_files,
+            run_notes=run_notes,
             evaluation_stdout=evaluation_stdout,
             evaluation_stderr=evaluation_stderr,
         )
@@ -477,3 +486,25 @@ class ExperimentOrchestrator:
 
     def _build_experiment_instruction(self, objective_name: str, edit_policy: EditPolicy) -> str:
         return f"{edit_policy.prompt_prefix()}\n\n{build_experiment_prompt(objective_name=objective_name)}"
+
+    def _build_attempted_change(self, response_text: str) -> str:
+        paragraphs = [paragraph.strip() for paragraph in response_text.split("\n\n") if paragraph.strip()]
+        if not paragraphs:
+            return ""
+        return " ".join(paragraphs[0].split())
+
+    def _build_changed_files(self, file_changes: list[object]) -> tuple[str, ...]:
+        paths: list[str] = []
+        seen_paths: set[str] = set()
+
+        for entry in file_changes:
+            path = getattr(entry, "path", "")
+            if not isinstance(path, str):
+                continue
+            normalized = path.strip()
+            if not normalized or normalized in seen_paths:
+                continue
+            seen_paths.add(normalized)
+            paths.append(normalized)
+
+        return tuple(paths)

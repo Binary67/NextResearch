@@ -114,62 +114,102 @@ def build_experiment_history_document(
     comparable_entries: list[dict[str, object]],
     optimization_direction: str,
 ) -> str:
+    improved_entries = [entry for entry in comparable_entries if bool(entry.get("improved"))]
+    current_streak_entries = _current_search_streak_entries(comparable_entries)
+    included_entries = _history_entries_for_context(comparable_entries)
     lines = [
         "# Experiment History",
         "",
         "## Summary",
         f"- Comparable runs: {len(comparable_entries)}",
-        f"- Improved runs: {sum(1 for entry in comparable_entries if bool(entry.get('improved')))}",
+        f"- Included in history: {len(included_entries)}",
+        f"- Improved runs: {len(improved_entries)}",
+        f"- Current no-improvement streak: {_count_recent_non_improvements(comparable_entries)}",
         f"- Best score seen: {_format_optional_float(_best_score_from_entries(comparable_entries, optimization_direction))}",
         f"- Latest run status: {_latest_status(comparable_entries)}",
-        "",
-        "## Recent And Representative Runs",
     ]
 
-    selected_entries = _select_history_entries(comparable_entries)
-    if not selected_entries:
-        lines.append("- No comparable prior runs.")
+    if not comparable_entries:
+        lines.extend(["", "## Included Runs", "- No comparable prior runs."])
         return "\n".join(lines) + "\n"
 
-    for entry in selected_entries:
-        lines.extend(
-            [
-                "",
-                f"### {_string_value(entry, 'run_id', '(unknown run)')}",
-                f"- Completed at: {_string_value(entry, 'completed_at', 'unknown')}",
-                f"- Status: {_string_value(entry, 'status', 'unknown')}",
-                f"- Improved: {_bool_label(entry.get('improved'))}",
-                f"- Score: {_format_optional_float(_float_value(entry.get('score')))}",
-                f"- Score delta: {_format_optional_float(_float_value(entry.get('score_delta')))}",
-                f"- Summary: {_truncate_text(_string_value(entry, 'codex_response_summary', 'No summary recorded.'))}",
-            ]
-        )
-        failure_note = _failure_note(entry)
-        if failure_note:
-            lines.append(f"- Failure note: {failure_note}")
+    lines.extend(["", "## Improved Runs"])
+    if improved_entries:
+        for entry in improved_entries:
+            lines.extend(_render_history_entry(entry))
+    else:
+        lines.append("- No improved comparable runs.")
+
+    lines.extend(["", "## Current Search Streak"])
+    if current_streak_entries:
+        for entry in current_streak_entries:
+            lines.extend(_render_history_entry(entry))
+    elif improved_entries:
+        lines.append("- No runs after the latest improvement.")
+    else:
+        lines.append("- No current streak yet.")
 
     return "\n".join(lines) + "\n"
 
 
-def _select_history_entries(comparable_entries: list[dict[str, object]]) -> list[dict[str, object]]:
-    recent_entries = comparable_entries[-4:]
-    improved_entries = [entry for entry in comparable_entries if bool(entry.get("improved"))][-3:]
-    failure_entries = [entry for entry in comparable_entries if _string_value(entry, "status", "") != "improved"][-2:]
+def _render_history_entry(entry: dict[str, object]) -> list[str]:
+    lines = [
+        "",
+        f"### {_string_value(entry, 'run_id', '(unknown run)')}",
+        f"- Completed at: {_string_value(entry, 'completed_at', 'unknown')}",
+        f"- Status: {_string_value(entry, 'status', 'unknown')}",
+        f"- Improved: {_bool_label(entry.get('improved'))}",
+        f"- Score: {_format_optional_float(_float_value(entry.get('score')))}",
+        f"- Score delta: {_format_optional_float(_float_value(entry.get('score_delta')))}",
+        f"- Attempted change: {_string_value(entry, 'attempted_change', 'No attempted change recorded.')}",
+        f"- Files changed: {_format_files_changed(entry)}",
+    ]
+    notes = _string_list(entry.get("notes"))
+    if notes:
+        lines.append("- Notes:")
+        lines.extend(f"  - {note}" for note in notes)
+    return lines
 
+
+def _history_entries_for_context(comparable_entries: list[dict[str, object]]) -> list[dict[str, object]]:
+    if not comparable_entries:
+        return []
+
+    if not any(bool(entry.get("improved")) for entry in comparable_entries):
+        return comparable_entries
+
+    last_improved_index = max(
+        index for index, entry in enumerate(comparable_entries) if bool(entry.get("improved"))
+    )
     selected_entries: list[dict[str, object]] = []
     seen_run_ids: set[str] = set()
 
-    for group in (recent_entries, improved_entries, failure_entries):
-        for entry in reversed(group):
-            run_id = _string_value(entry, "run_id", "")
-            if not run_id or run_id in seen_run_ids:
-                continue
-            seen_run_ids.add(run_id)
-            selected_entries.append(entry)
-            if len(selected_entries) >= 10:
-                return selected_entries
+    for entry in comparable_entries:
+        run_id = _string_value(entry, "run_id", "")
+        if not bool(entry.get("improved")) or not run_id or run_id in seen_run_ids:
+            continue
+        seen_run_ids.add(run_id)
+        selected_entries.append(entry)
+
+    for entry in comparable_entries[last_improved_index + 1 :]:
+        run_id = _string_value(entry, "run_id", "")
+        if not run_id or run_id in seen_run_ids:
+            continue
+        seen_run_ids.add(run_id)
+        selected_entries.append(entry)
 
     return selected_entries
+
+
+def _current_search_streak_entries(comparable_entries: list[dict[str, object]]) -> list[dict[str, object]]:
+    if not comparable_entries:
+        return []
+
+    improved_indexes = [index for index, entry in enumerate(comparable_entries) if bool(entry.get("improved"))]
+    if not improved_indexes:
+        return comparable_entries
+
+    return comparable_entries[improved_indexes[-1] + 1 :]
 
 
 def _count_recent_non_improvements(comparable_entries: list[dict[str, object]]) -> int:
@@ -208,21 +248,6 @@ def _format_last_improved(entry: dict[str, object] | None) -> str:
     return f"{run_id} (delta {score_delta})"
 
 
-def _failure_note(entry: dict[str, object]) -> str:
-    status = _string_value(entry, "status", "")
-    if status in {"improved", "not_improved"}:
-        return ""
-
-    stderr = _string_value(entry, "evaluation_stderr", "")
-    if stderr:
-        return _truncate_text(stderr)
-
-    summary = _string_value(entry, "codex_response_summary", "")
-    if summary:
-        return _truncate_text(summary)
-    return ""
-
-
 def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -256,8 +281,22 @@ def _bool_label(value: object) -> str:
     return "yes" if bool(value) else "no"
 
 
-def _truncate_text(value: str, limit: int = 220) -> str:
-    normalized = " ".join(value.split())
-    if len(normalized) <= limit:
-        return normalized or "(empty)"
-    return normalized[: limit - 3].rstrip() + "..."
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    items: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        normalized = " ".join(entry.split())
+        if normalized:
+            items.append(normalized)
+    return items
+
+
+def _format_files_changed(entry: dict[str, object]) -> str:
+    paths = _string_list(entry.get("files_changed"))
+    if not paths:
+        return "None"
+    return ", ".join(paths)

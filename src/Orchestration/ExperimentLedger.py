@@ -27,6 +27,7 @@ class ExperimentLedger:
         docs_dir: Path,
         bootstrap_artifacts: BootstrapArtifacts,
     ) -> None:
+        notes = self._build_notes(result)
         entry = {
             "run_id": result.run_id,
             "objective_name": result.objective_name,
@@ -47,7 +48,9 @@ class ExperimentLedger:
             "evaluation_spec_path": str(docs_dir / "EVALUATION_SPEC.md"),
             "running_instructions_hash": self._hash_text(bootstrap_artifacts.running_instructions),
             "evaluation_spec_hash": self._hash_text(bootstrap_artifacts.evaluation_spec),
-            "codex_response_summary": result.response_text,
+            "attempted_change": result.attempted_change,
+            "files_changed": list(result.changed_files),
+            "notes": notes,
             "evaluation_stdout": result.evaluation_stdout,
             "evaluation_stderr": result.evaluation_stderr,
             "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -73,3 +76,26 @@ class ExperimentLedger:
 
     def _hash_text(self, value: str) -> str:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def _build_notes(self, result: ExperimentIterationResult) -> list[str]:
+        notes: list[str] = []
+        seen_notes: set[str] = set()
+
+        for note in result.run_notes:
+            normalized = self._normalize_text(note)
+            if normalized and normalized not in seen_notes:
+                seen_notes.add(normalized)
+                notes.append(normalized)
+
+        if result.status not in {"improved", "not_improved"}:
+            fallback = self._normalize_text(result.evaluation_stderr) or self._normalize_text(result.response_text)
+            if fallback and fallback not in seen_notes:
+                notes.append(fallback)
+
+        return notes
+
+    def _normalize_text(self, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        return " ".join(stripped.split())
