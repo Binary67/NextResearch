@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .Models import BootstrapArtifacts, ExperimentIterationResult
+from .Models import ExperimentIterationResult
 
 
 class ExperimentLedger:
@@ -25,7 +24,6 @@ class ExperimentLedger:
         evaluation_command: str,
         optimization_direction: str,
         docs_dir: Path,
-        bootstrap_artifacts: BootstrapArtifacts,
     ) -> None:
         notes = self._build_notes(result)
         entry = {
@@ -46,9 +44,9 @@ class ExperimentLedger:
             "session_log_path": str(result.session_log_path) if result.session_log_path else None,
             "running_instructions_path": str(docs_dir / "RUNNING_INSTRUCTIONS.md"),
             "evaluation_spec_path": str(docs_dir / "EVALUATION_SPEC.md"),
-            "running_instructions_hash": self._hash_text(bootstrap_artifacts.running_instructions),
-            "evaluation_spec_hash": self._hash_text(bootstrap_artifacts.evaluation_spec),
-            "attempted_change": result.attempted_change,
+            "response_text": result.response_text,
+            "strategy": result.strategy,
+            "why_it_should_help": result.why_it_should_help,
             "files_changed": list(result.changed_files),
             "notes": notes,
             "evaluation_stdout": result.evaluation_stdout,
@@ -73,9 +71,6 @@ class ExperimentLedger:
                     continue
                 entries.append(entry)
         return entries
-
-    def _hash_text(self, value: str) -> str:
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     def _build_notes(self, result: ExperimentIterationResult) -> list[str]:
         notes: list[str] = []

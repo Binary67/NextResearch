@@ -60,4 +60,6 @@ Constraints:
 - Do not bundle unrelated tweaks.
 - Avoid speculative refactors.
 
-Reply with a concise summary of the strategy you implemented, which files you changed, and why the combined change should improve the objective.
+Reply using exactly this format:
+Strategy: <one concise paragraph>
+Why this should help: <one concise paragraph>

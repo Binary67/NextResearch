@@ -56,7 +56,8 @@ class ExperimentIterationResult:
     result_commit: str | None
     session_log_path: Path | None
     response_text: str
-    attempted_change: str
+    strategy: str
+    why_it_should_help: str
     changed_files: tuple[str, ...]
     run_notes: tuple[str, ...]
     evaluation_stdout: str

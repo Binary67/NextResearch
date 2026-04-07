@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from .Models import BootstrapArtifacts, ExperimentRunConfig
@@ -20,7 +19,6 @@ def build_run_docs(
         ledger_entries=ledger_entries,
         target_repo_path=target_repo_path,
         config=config,
-        bootstrap_artifacts=bootstrap_artifacts,
     )
     return {
         "RUNNING_INSTRUCTIONS.md": bootstrap_artifacts.running_instructions,
@@ -44,10 +42,7 @@ def load_comparable_entries(
     ledger_entries: list[dict[str, object]],
     target_repo_path: Path,
     config: ExperimentRunConfig,
-    bootstrap_artifacts: BootstrapArtifacts,
 ) -> list[dict[str, object]]:
-    running_hash = _hash_text(bootstrap_artifacts.running_instructions)
-    evaluation_hash = _hash_text(bootstrap_artifacts.evaluation_spec)
     comparable_entries: list[dict[str, object]] = []
 
     for entry in ledger_entries:
@@ -56,8 +51,6 @@ def load_comparable_entries(
             or str(entry.get("objective_name")) != config.objective_name
             or str(entry.get("evaluation_command")) != config.evaluation_command
             or str(entry.get("optimization_direction")) != config.optimization_direction
-            or str(entry.get("running_instructions_hash")) != running_hash
-            or str(entry.get("evaluation_spec_hash")) != evaluation_hash
         ):
             continue
         comparable_entries.append(entry)
@@ -161,7 +154,8 @@ def _render_history_entry(entry: dict[str, object]) -> list[str]:
         f"- Improved: {_bool_label(entry.get('improved'))}",
         f"- Score: {_format_optional_float(_float_value(entry.get('score')))}",
         f"- Score delta: {_format_optional_float(_float_value(entry.get('score_delta')))}",
-        f"- Attempted change: {_string_value(entry, 'attempted_change', 'No attempted change recorded.')}",
+        f"- Strategy: {_string_value(entry, 'strategy', 'No strategy recorded.')}",
+        f"- Why this should help: {_string_value(entry, 'why_it_should_help', 'No rationale recorded.')}",
         f"- Files changed: {_format_files_changed(entry)}",
     ]
     notes = _string_list(entry.get("notes"))
@@ -246,10 +240,6 @@ def _format_last_improved(entry: dict[str, object] | None) -> str:
     run_id = _string_value(entry, "run_id", "(unknown run)")
     score_delta = _format_optional_float(_float_value(entry.get("score_delta")))
     return f"{run_id} (delta {score_delta})"
-
-
-def _hash_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _string_value(entry: dict[str, object], key: str, default: str) -> str:

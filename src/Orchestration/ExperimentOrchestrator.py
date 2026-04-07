@@ -209,7 +209,8 @@ class ExperimentOrchestrator:
         status = "failed"
         result_commit: str | None = None
         response_text = ""
-        attempted_change = ""
+        strategy = ""
+        why_it_should_help = ""
         session_log_path: Path | None = None
         changed_files: tuple[str, ...] = ()
         run_notes: tuple[str, ...] = ()
@@ -263,7 +264,7 @@ class ExperimentOrchestrator:
                 blocked_commands=blocked_commands_for_run(config),
             )
             response_text = session_result.turn_result.response_text
-            attempted_change = self._build_attempted_change(session_result.turn_result.response_text)
+            strategy, why_it_should_help = self._build_summary_fields(session_result.turn_result.response_text)
             session_log_path = session_result.session_log_path
             changed_files = self._build_changed_files(session_result.turn_result.file_changes)
             run_notes = tuple(session_result.turn_result.errors_and_recoveries)
@@ -350,7 +351,8 @@ class ExperimentOrchestrator:
             result_commit=result_commit,
             session_log_path=session_log_path,
             response_text=response_text,
-            attempted_change=attempted_change,
+            strategy=strategy,
+            why_it_should_help=why_it_should_help,
             changed_files=changed_files,
             run_notes=run_notes,
             evaluation_stdout=evaluation_stdout,
@@ -364,7 +366,6 @@ class ExperimentOrchestrator:
                 evaluation_command=config.evaluation_command,
                 optimization_direction=config.optimization_direction,
                 docs_dir=docs_dir,
-                bootstrap_artifacts=bootstrap_artifacts,
             )
         finally:
             cleanup_experiment_workspaces(
@@ -487,11 +488,31 @@ class ExperimentOrchestrator:
     def _build_experiment_instruction(self, objective_name: str, edit_policy: EditPolicy) -> str:
         return f"{edit_policy.prompt_prefix()}\n\n{build_experiment_prompt(objective_name=objective_name)}"
 
-    def _build_attempted_change(self, response_text: str) -> str:
-        paragraphs = [paragraph.strip() for paragraph in response_text.split("\n\n") if paragraph.strip()]
+    def _build_summary_fields(self, response_text: str) -> tuple[str, str]:
+        normalized = response_text.replace("\r\n", "\n").strip()
+        if not normalized:
+            return "", ""
+
+        pattern = re.compile(
+            r"(?ms)^\s*(Strategy|Why this should help):\s*(.*?)(?=^\s*(?:Strategy|Why this should help):|\Z)"
+        )
+        fields = {
+            label: " ".join(value.split())
+            for label, value in pattern.findall(normalized)
+            if value.strip()
+        }
+        strategy = fields.get("Strategy", "")
+        why_it_should_help = fields.get("Why this should help", "")
+        if strategy or why_it_should_help:
+            return strategy, why_it_should_help
+
+        paragraphs = [" ".join(paragraph.split()) for paragraph in normalized.split("\n\n") if paragraph.strip()]
         if not paragraphs:
-            return ""
-        return " ".join(paragraphs[0].split())
+            return "", ""
+
+        strategy = paragraphs[0]
+        why_it_should_help = paragraphs[1] if len(paragraphs) > 1 else ""
+        return strategy, why_it_should_help
 
     def _build_changed_files(self, file_changes: list[object]) -> tuple[str, ...]:
         paths: list[str] = []
