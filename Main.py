@@ -1,24 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from src.Orchestration import ExperimentOrchestrator, ExperimentRunConfig
+from src.Orchestration.RunConfigFile import load_run_config
 
 
-PROJECT_ROOT = "D:/HousePricePrediction"
-DEFAULT_CONFIG = ExperimentRunConfig(
-    target_repo_path=PROJECT_ROOT,
-    objective_name="maximize-evaluation-score",
-    evaluation_command="uv run evaluation.py",
-    iteration_count=5,
-    optimization_direction="minimize",
-    editable_paths=("feature_engineering.py", "train.py"),
-    non_editable_paths=(),
-    non_readable_paths=("evaluation.py", "data_processing.py"),
-)
-
-
-def main(config: ExperimentRunConfig = DEFAULT_CONFIG) -> None:
+def main(config: ExperimentRunConfig) -> None:
     orchestrator = ExperimentOrchestrator()
     results = orchestrator.run_iterations(config)
 
@@ -31,4 +17,4 @@ def main(config: ExperimentRunConfig = DEFAULT_CONFIG) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(load_run_config())

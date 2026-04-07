@@ -7,7 +7,7 @@ NextResearch is a Python experiment orchestrator for running Codex-guided optimi
 This repository is currently closer to a library/prototype than a polished end-user application.
 
 - The main workflow is exposed as Python classes in `src/Orchestration`.
-- `Main.py` is a local example runner, not a general-purpose entrypoint.
+- `Main.py` is a local config-driven runner for manual experiments.
 - The target repository and evaluator are expected to exist outside this repository.
 
 ## What It Does
@@ -156,7 +156,7 @@ are stored in the top-level `PromptTemplates.md` file. The orchestrator reads th
 - `Documentations/`
   - reference material, including a local copy of Codex app-server documentation
 - `Main.py`
-  - local example runner with hardcoded values
+  - local runner that reads settings from repo-root `config.toml`
 
 ## Examples In This Repo
 
@@ -173,7 +173,23 @@ uv run ExampleUsage/Example_Logging.py
 uv run Main.py
 ```
 
-However, the current file contains environment-specific hardcoded values and should be treated as a local example, not the primary usage path.
+On the first run, `Main.py` creates a starter `config.toml` in the repo root and exits. Fill in the required values there, then rerun `uv run Main.py`.
+
+`config.toml` uses flat top-level keys with no section headers. Required fields are:
+
+- `target_repo_path`
+- `objective_name`
+- `evaluation_command`
+- `iteration_count`
+- `optimization_direction`
+
+Optional fields are:
+
+- `evaluation_file_path`
+- `baseline_branch`
+- `editable_paths`
+- `non_editable_paths`
+- `non_readable_paths`
 
 `ResetExperiments.py` is a local reset helper for starting fresh on a single objective:
 
@@ -187,5 +203,5 @@ Set `TARGET_REPO_PATH`, `OBJECTIVE_NAME`, and optionally `DELETE_ALL_LOGS` insid
 
 - The target repository must be clean before a run starts.
 - This repository does not include a built-in evaluator.
-- `Main.py` is currently hardcoded to a local path and example evaluation command.
+- `Main.py` depends on a user-filled repo-root `config.toml`.
 - There is no test suite in this repository.
