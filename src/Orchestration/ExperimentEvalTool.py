@@ -43,6 +43,10 @@ class CandidateSnapshot:
     fingerprint: str
     patch: bytes
 
+    @property
+    def is_modified(self) -> bool:
+        return bool(self.patch)
+
 
 @dataclass(frozen=True)
 class CachedEvaluationResult:
@@ -54,6 +58,15 @@ class CachedEvaluationResult:
 
 
 @dataclass(frozen=True)
+class RetainedCandidate:
+    snapshot: CandidateSnapshot
+    score: float
+    stdout: str
+    stderr: str
+    improved_relative_to_best: bool
+
+
+@dataclass(frozen=True)
 class FinalCandidateEvaluation:
     fingerprint: str
     score: float | None
@@ -61,6 +74,7 @@ class FinalCandidateEvaluation:
     stderr: str
     failure_message: str | None
     reused_cached_result: bool
+    retained_modified_candidate: bool
 
 
 class ExperimentEvalTool:
@@ -94,8 +108,13 @@ class ExperimentEvalTool:
         self._environment = dict(environment)
         self._budget_remaining = budget
         self._excluded_patch_paths = tuple(path for path in excluded_patch_paths if path)
+        self._baseline_snapshot = CandidateSnapshot(
+            fingerprint=hashlib.sha256(b"").hexdigest(),
+            patch=b"",
+        )
         self._last_synced_fingerprint: str | None = None
         self._last_evaluation: CachedEvaluationResult | None = None
+        self._best_modified_candidate: RetainedCandidate | None = None
 
     @property
     def budget_remaining(self) -> int:
@@ -140,6 +159,12 @@ class ExperimentEvalTool:
             stdout=outcome.stdout,
             stderr=outcome.stderr,
         )
+        self._retain_candidate_if_best(
+            snapshot=snapshot,
+            score=outcome.score,
+            stdout=outcome.stdout,
+            stderr=outcome.stderr,
+        )
         delta_vs_best = self._score_delta(outcome.score, self._best_score)
         delta_vs_start = self._score_delta(outcome.score, self._start_score)
         return ToolEvaluationResponse(
@@ -153,20 +178,25 @@ class ExperimentEvalTool:
 
     def sync_current_candidate(self) -> CandidateSnapshot:
         snapshot = self._snapshot_candidate()
-        if snapshot.fingerprint == self._last_synced_fingerprint:
-            return snapshot
-
-        self._workspace.reset_worktree_to_ref(
-            self._orchestrator_worktree_path,
-            self._current_base_commit,
-            clean_untracked=True,
-        )
-        self._workspace.apply_patch(self._orchestrator_worktree_path, snapshot.patch)
-        self._last_synced_fingerprint = snapshot.fingerprint
+        self._sync_snapshot(snapshot)
         return snapshot
 
     def finalize_candidate(self) -> FinalCandidateEvaluation:
-        snapshot = self.sync_current_candidate()
+        retained_candidate = self._best_modified_candidate
+        if retained_candidate is not None:
+            self._sync_snapshot(retained_candidate.snapshot)
+            return FinalCandidateEvaluation(
+                fingerprint=retained_candidate.snapshot.fingerprint,
+                score=retained_candidate.score,
+                stdout=retained_candidate.stdout,
+                stderr=retained_candidate.stderr,
+                failure_message=None,
+                reused_cached_result=True,
+                retained_modified_candidate=True,
+            )
+
+        snapshot = self._baseline_snapshot
+        self._sync_snapshot(snapshot)
         if self._last_evaluation is not None and self._last_evaluation.fingerprint == snapshot.fingerprint:
             return FinalCandidateEvaluation(
                 fingerprint=snapshot.fingerprint,
@@ -175,6 +205,7 @@ class ExperimentEvalTool:
                 stderr=self._last_evaluation.stderr,
                 failure_message=self._last_evaluation.failure_message,
                 reused_cached_result=True,
+                retained_modified_candidate=False,
             )
 
         try:
@@ -195,6 +226,7 @@ class ExperimentEvalTool:
                 stderr=failure_message,
                 failure_message=failure_message,
                 reused_cached_result=False,
+                retained_modified_candidate=False,
             )
 
         self._last_evaluation = CachedEvaluationResult(
@@ -210,7 +242,20 @@ class ExperimentEvalTool:
             stderr=outcome.stderr,
             failure_message=None,
             reused_cached_result=False,
+            retained_modified_candidate=False,
         )
+
+    def _sync_snapshot(self, snapshot: CandidateSnapshot) -> None:
+        if snapshot.fingerprint == self._last_synced_fingerprint:
+            return
+
+        self._workspace.reset_worktree_to_ref(
+            self._orchestrator_worktree_path,
+            self._current_base_commit,
+            clean_untracked=True,
+        )
+        self._workspace.apply_patch(self._orchestrator_worktree_path, snapshot.patch)
+        self._last_synced_fingerprint = snapshot.fingerprint
 
     def _snapshot_candidate(self) -> CandidateSnapshot:
         patch = self._workspace.diff_against_ref(
@@ -230,11 +275,41 @@ class ExperimentEvalTool:
             environment=self._environment,
         )
 
+    def _retain_candidate_if_best(
+        self,
+        *,
+        snapshot: CandidateSnapshot,
+        score: float,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        if not snapshot.is_modified:
+            return
+
+        retained_candidate = self._best_modified_candidate
+        if retained_candidate is not None and not self._is_better_score(score, retained_candidate.score):
+            return
+
+        self._best_modified_candidate = RetainedCandidate(
+            snapshot=snapshot,
+            score=score,
+            stdout=stdout,
+            stderr=stderr,
+            improved_relative_to_best=self._is_better_score(score, self._best_score),
+        )
+
     def _score_delta(self, score: float, reference: float) -> float:
         if self._optimization_direction == "minimize":
             return reference - score
         if self._optimization_direction == "maximize":
             return score - reference
+        raise ValueError(f"Unsupported optimization_direction: {self._optimization_direction}")
+
+    def _is_better_score(self, score: float, reference: float) -> bool:
+        if self._optimization_direction == "minimize":
+            return score < reference
+        if self._optimization_direction == "maximize":
+            return score > reference
         raise ValueError(f"Unsupported optimization_direction: {self._optimization_direction}")
 
     def _success_note(self, score: float) -> str:

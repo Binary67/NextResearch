@@ -55,20 +55,20 @@ Before making changes:
 
 Your job:
 1. Analyze the relevant code across the editable files.
-2. Choose one coherent improvement strategy likely to improve the objective.
-3. Implement the smallest useful hypothesis-driven change for that strategy.
+2. Choose an improvement strategy likely to improve the objective, and pivot to the next plausible hypothesis if the current one is clearly falsified by evaluation feedback.
+3. Implement the smallest useful hypothesis-driven change for the current best hypothesis.
 4. Call `{eval_tool_name}` after meaningful changes when score feedback would reduce uncertainty.
-5. Use the returned score, deltas, and note to refine, simplify, or back out changes while staying within the same strategy.
+5. Use the returned score, deltas, and note to refine or pivot while budget remains. Do not ask the human user for approval before editing or evaluating; this is an unattended optimization run and orchestrator-side approvals are handled programmatically.
 6. You may edit one or multiple allowed files when those edits are directly connected to the same strategy.
 7. If the strategy depends on coordinated feature and training changes, make those changes together instead of stopping at an isolated patch.
-8. Stop when the eval budget is exhausted or when no better variant is evident.
-9. Leave the workspace in the best state you found during this attempt.
+8. Keep exploring after a non-improving evaluation while budget remains. Do not spend evaluation budget re-confirming the baseline just to end the run.
+9. Stop early if you find a candidate that improves over the current best score; otherwise stop when the eval budget is exhausted.
 10. If needed, run only sanity-check commands that are allowed by `RUNNING_INSTRUCTIONS.md`.
 
 Constraints:
 - Do not read or modify the real evaluator implementation.
 - Do not edit files under `.nextresearch`.
-- Keep the attempt focused on one strategy.
+- Keep each change hypothesis-focused, but you may switch to a new plausible hypothesis after evaluation feedback clearly rejects the current one.
 - Do not bundle unrelated tweaks.
 - Avoid speculative refactors.
 

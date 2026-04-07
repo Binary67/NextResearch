@@ -27,6 +27,7 @@ def cleanup_experiment_workspaces(
     orchestrator_worktree_path: Path,
     agent_worktree_path: Path,
     branch_name: str,
+    preserve_branch: bool = False,
 ) -> None:
     try:
         workspace.remove_worktree(agent_worktree_path)
@@ -34,7 +35,8 @@ def cleanup_experiment_workspaces(
         try:
             workspace.remove_worktree(orchestrator_worktree_path)
         finally:
-            workspace.delete_branch(branch_name)
+            if not preserve_branch:
+                workspace.delete_branch(branch_name)
 
 
 def print_edit_policy(edit_policy: EditPolicy) -> None:

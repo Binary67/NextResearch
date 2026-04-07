@@ -111,6 +111,8 @@ def run_iteration(
     evaluation_stdout = ""
     evaluation_stderr = ""
     app_server_file_changes = 0
+    preserve_branch = False
+    retained_modified_candidate = False
 
     try:
         workspace.create_experiment_worktree(branch_name, orchestrator_worktree_path, current_base_commit)
@@ -197,6 +199,8 @@ def run_iteration(
         score_delta = _score_delta(score, best_score, config.optimization_direction)
         improved = _is_improvement(score, best_score, config.optimization_direction)
         status = "improved" if improved else "not_improved"
+        retained_modified_candidate = final_evaluation.retained_modified_candidate
+        preserve_branch = retained_modified_candidate and not improved
     except CodexAgentError as exc:
         status = "codex_failed"
         response_text = str(exc)
@@ -246,6 +250,15 @@ def run_iteration(
         if result_commit is None:
             result_commit = current_base_commit
         workspace.force_branch(best_branch_name, result_commit)
+    elif retained_modified_candidate:
+        result_commit = workspace.commit_worktree_if_needed(
+            worktree_path=orchestrator_worktree_path,
+            branch_name=branch_name,
+            objective_slug=objective_slug,
+            run_id=run_id,
+        )
+        if result_commit is None:
+            result_commit = workspace.rev_parse("HEAD", cwd=orchestrator_worktree_path)
     elif orchestrator_worktree_path.exists():
         result_commit = workspace.rev_parse("HEAD", cwd=orchestrator_worktree_path)
 
@@ -284,6 +297,7 @@ def run_iteration(
             orchestrator_worktree_path,
             agent_worktree_path,
             branch_name,
+            preserve_branch=preserve_branch,
         )
     return result
 
