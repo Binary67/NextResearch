@@ -28,6 +28,10 @@ class ExperimentLedger:
         notes = self._build_notes(result)
         entry = {
             "run_id": result.run_id,
+            "status": result.status,
+            "improved": result.improved,
+            "score": result.score,
+            "score_delta": result.score_delta,
             "objective_name": result.objective_name,
             "target_repo_path": str(target_repo_path),
             "branch_name": result.branch_name,
@@ -35,10 +39,6 @@ class ExperimentLedger:
             "worktree_path": str(worktree_path.resolve()),
             "base_commit": result.base_commit,
             "result_commit": result.result_commit,
-            "status": result.status,
-            "improved": result.improved,
-            "score": result.score,
-            "score_delta": result.score_delta,
             "evaluation_command": evaluation_command,
             "optimization_direction": optimization_direction,
             "session_log_path": str(result.session_log_path) if result.session_log_path else None,
