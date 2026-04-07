@@ -20,7 +20,8 @@ This repository is currently closer to a library/prototype than a polished end-u
   - `BASELINE_STATE.md`
   - `EXPERIMENT_HISTORY.md`
 - Creates an isolated worktree and experiment branch for each iteration.
-- Asks Codex to make one coherent improvement attempt, which may include coordinated edits across the allowed files.
+- Asks Codex to make one coherent improvement attempt, which may include coordinated edits across the allowed files
+  and a budgeted in-turn eval/refinement loop through an orchestrator-owned dynamic tool.
 - Runs an external evaluation command and parses the score.
 - Keeps the best result on `best/<objective>`.
 - Writes a JSONL experiment ledger and markdown session logs under `Logs/`.
@@ -65,6 +66,7 @@ The run configuration includes:
 - `evaluation_command`
 - `iteration_count`
 - `optimization_direction`
+- `agent_eval_budget`
 - optional `evaluation_file_path`
 - optional `baseline_branch`
 - optional `editable_paths`
@@ -97,6 +99,7 @@ config = ExperimentRunConfig(
     evaluation_command="uv run evaluation.py",
     iteration_count=3,
     optimization_direction="minimize",
+    agent_eval_budget=3,
 )
 
 orchestrator = ExperimentOrchestrator()
@@ -118,11 +121,12 @@ for result in results:
 5. Create an isolated experiment branch and full orchestrator worktree.
 6. Create a restricted sparse worktree for the Codex agent.
 7. Ask Codex to make one coherent improvement in the restricted worktree, including coordinated multi-file edits when one strategy needs them.
-8. Apply the resulting patch to the full orchestrator worktree.
-9. Run the evaluator in the full orchestrator worktree.
-10. If the score improves, commit the change and update `best/<objective>`.
-11. Append the run result to the experiment ledger.
-12. Clean up the temporary worktrees and branch.
+8. Optionally let Codex call the orchestrator-owned `orchestrator_run_eval` dynamic tool to evaluate the current candidate state without exposing evaluator internals.
+9. Sync the final candidate patch to the full orchestrator worktree.
+10. Run the final authoritative evaluator result in the full orchestrator worktree, reusing the last in-turn eval when the candidate is unchanged.
+11. If the score improves, commit the change and update `best/<objective>`.
+12. Append the run result to the experiment ledger.
+13. Clean up the temporary worktrees and branch.
 
 ## Outputs
 
@@ -185,6 +189,7 @@ On the first run, `Main.py` creates a starter `config.toml` in the repo root and
 
 Optional fields are:
 
+- `agent_eval_budget`
 - `evaluation_file_path`
 - `baseline_branch`
 - `editable_paths`

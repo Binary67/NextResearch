@@ -71,6 +71,7 @@ class ExperimentRunConfig:
     evaluation_command: str
     iteration_count: int
     optimization_direction: Literal["minimize", "maximize"]
+    agent_eval_budget: int = 3
     evaluation_file_path: str | Path | None = None
     baseline_branch: str | None = None
     editable_paths: tuple[str, ...] = ()
@@ -80,6 +81,10 @@ class ExperimentRunConfig:
     def __post_init__(self) -> None:
         if self.optimization_direction not in {"minimize", "maximize"}:
             raise ValueError("optimization_direction must be 'minimize' or 'maximize'.")
+        if not isinstance(self.agent_eval_budget, int) or isinstance(self.agent_eval_budget, bool):
+            raise ValueError("agent_eval_budget must be an integer.")
+        if self.agent_eval_budget < 1:
+            raise ValueError("agent_eval_budget must be at least 1.")
         object.__setattr__(
             self,
             "editable_paths",

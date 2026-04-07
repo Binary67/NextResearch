@@ -20,11 +20,21 @@ class FileChangeLogEntry:
 
 
 @dataclass(frozen=True)
+class DynamicToolLogEntry:
+    tool: str
+    arguments: str = ""
+    status: str | None = None
+    success: bool | None = None
+    result: str = ""
+
+
+@dataclass(frozen=True)
 class TurnLogEntry:
     user_request: str
     codex_response: str = ""
     commands: list[CommandLogEntry] = field(default_factory=list)
     file_changes: list[FileChangeLogEntry] = field(default_factory=list)
+    dynamic_tool_calls: list[DynamicToolLogEntry] = field(default_factory=list)
     errors_and_recoveries: list[str] = field(default_factory=list)
 
 
@@ -84,7 +94,9 @@ class CodexSessionLog:
         )
 
     def append_turn_finished(self, thread_id: str, turn: TurnLogEntry, status: str) -> Path:
-        work_summary = f"Ran {len(turn.commands)} command(s)."
+        work_summary = (
+            f"Ran {len(turn.commands)} command(s) and {len(turn.dynamic_tool_calls)} dynamic tool call(s)."
+        )
         sections: list[tuple[str, str]] = [
             self._single_line_section("Turn Status", status),
             self._single_line_section("Work Performed", work_summary),
@@ -149,6 +161,19 @@ class CodexSessionLog:
             ],
         )
 
+    def append_dynamic_tool_registration(self, thread_id: str, tools: list[tuple[str, str]]) -> Path:
+        if not tools:
+            return self.path_for_thread(thread_id)
+
+        content = "\n".join(
+            f"- {name}: {description}" if description else f"- {name}"
+            for name, description in tools
+        )
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [self._multi_line_section("Dynamic Tools", content)],
+        )
+
     def append_policy_denial(self, thread_id: str, path: str, reason: str) -> Path:
         return self._append_sections(
             self.path_for_thread(thread_id),
@@ -172,6 +197,21 @@ class CodexSessionLog:
                 self._single_line_section("Command Reason", reason),
             ],
         )
+
+    def append_dynamic_tool_completed(self, thread_id: str, tool_call: DynamicToolLogEntry) -> Path:
+        status_line = tool_call.status or "unknown"
+        if tool_call.success is not None:
+            status_line = f"{status_line}; success={str(tool_call.success).lower()}"
+
+        sections = [
+            self._single_line_section("Dynamic Tool Call", tool_call.tool),
+            self._single_line_section("Dynamic Tool Status", status_line),
+        ]
+        if tool_call.arguments:
+            sections.append(self._multi_line_section("Dynamic Tool Arguments", tool_call.arguments))
+        if tool_call.result:
+            sections.append(self._multi_line_section("Dynamic Tool Result", tool_call.result))
+        return self._append_sections(self.path_for_thread(thread_id), sections)
 
     def _append_sections(self, path: Path, sections: list[tuple[str, str]]) -> Path:
         with path.open("a", encoding="utf-8") as handle:

@@ -8,7 +8,7 @@ from src.Agents.Codex.SessionLog import CodexSessionLog
 from src.EditPolicy import EditPolicy
 
 from .GitWorkspace import GitWorkspaceManager
-from .Models import ExperimentOrchestratorError, ExperimentRunConfig
+from .Models import ExperimentOrchestratorError
 
 
 def write_run_docs(docs_dir: Path, documents: dict[str, str]) -> None:
@@ -85,14 +85,16 @@ def append_post_run_review(
 def build_edit_policy(
     worktree_path: Path,
     session_cwd: Path,
-    config: ExperimentRunConfig,
+    editable_paths: tuple[str, ...],
+    non_editable_paths: tuple[str, ...],
+    non_readable_paths: tuple[str, ...],
 ) -> EditPolicy:
     return EditPolicy.from_paths(
         worktree_path,
         session_cwd=session_cwd,
-        editable_paths=config.editable_paths,
-        non_editable_paths=config.non_editable_paths,
-        non_readable_paths=config.non_readable_paths,
+        editable_paths=editable_paths,
+        non_editable_paths=non_editable_paths,
+        non_readable_paths=non_readable_paths,
     )
 
 
@@ -113,9 +115,9 @@ def build_agent_sparse_patterns(
     return patterns
 
 
-def blocked_commands_for_run(config: ExperimentRunConfig) -> tuple[str, ...]:
-    blocked_commands: list[str] = [config.evaluation_command]
-    for path in config.non_readable_paths:
+def blocked_commands_for_run(evaluation_command: str, non_readable_paths: tuple[str, ...]) -> tuple[str, ...]:
+    blocked_commands: list[str] = [evaluation_command]
+    for path in non_readable_paths:
         stripped = path.strip()
         if not stripped:
             continue
@@ -124,6 +126,22 @@ def blocked_commands_for_run(config: ExperimentRunConfig) -> tuple[str, ...]:
         if name and name != stripped:
             blocked_commands.append(name)
     return tuple(dict.fromkeys(blocked_commands))
+
+
+def build_effective_non_readable_paths(
+    target_relative_path: Path,
+    evaluation_relative_path: Path,
+    non_readable_paths: tuple[str, ...],
+) -> tuple[str, ...]:
+    hidden_paths = list(non_readable_paths)
+    evaluation_repo_relative_path = _target_scoped_path(target_relative_path, evaluation_relative_path)
+    if evaluation_repo_relative_path not in hidden_paths:
+        hidden_paths.append(evaluation_repo_relative_path)
+    return tuple(hidden_paths)
+
+
+def docs_excluded_patch_paths(target_relative_path: Path) -> tuple[str, ...]:
+    return (_target_scoped_path(target_relative_path, Path(".nextresearch")),)
 
 
 def _staged_text_paths_for_log(
@@ -167,3 +185,13 @@ def _docs_sparse_pattern(target_relative_path: Path) -> str:
     if not target_prefix or target_prefix == ".":
         return ".nextresearch/"
     return f"{target_prefix}/.nextresearch/"
+
+
+def _target_scoped_path(target_relative_path: Path, relative_path: Path) -> str:
+    target_prefix = target_relative_path.as_posix().strip("/")
+    scoped_path = relative_path.as_posix().strip("/")
+    if not target_prefix or target_prefix == ".":
+        return scoped_path
+    if not scoped_path:
+        return target_prefix
+    return f"{target_prefix}/{scoped_path}"

@@ -29,11 +29,8 @@ def bootstrap_artifacts(
     codex_session_runner: CodexSessionRunner,
     environment: Mapping[str, str],
 ) -> BootstrapArtifacts:
-    evaluation_relative_path = _resolve_evaluation_relative_path(
-        target_path,
-        evaluation_command,
-        evaluation_file_path,
-    )
+    evaluation_file = resolve_evaluation_file_path(target_path, evaluation_command, evaluation_file_path)
+    evaluation_relative_path = os.path.relpath(evaluation_file, target_path)
     worktree_path = worktrees_root / objective_slug / bootstrap_id
     running_result: CodexSessionRunResult | None = None
     evaluation_result: CodexSessionRunResult | None = None
@@ -74,11 +71,11 @@ def bootstrap_artifacts(
     )
 
 
-def _resolve_evaluation_relative_path(
+def resolve_evaluation_file_path(
     target_path: Path,
     evaluation_command: str,
     evaluation_file_path: str | Path | None,
-) -> str:
+) -> Path:
     if evaluation_file_path is not None:
         candidate = Path(evaluation_file_path)
         candidate = candidate.resolve() if candidate.is_absolute() else (target_path / candidate).resolve()
@@ -87,7 +84,7 @@ def _resolve_evaluation_relative_path(
 
     if candidate is None or not candidate.exists():
         raise ValueError("evaluation_file_path is required unless it can be inferred from evaluation_command.")
-    return os.path.relpath(candidate, target_path)
+    return candidate
 
 
 def _infer_evaluation_file_path(target_path: Path, evaluation_command: str) -> Path | None:

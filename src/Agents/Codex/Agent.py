@@ -7,11 +7,17 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from src.EditPolicy import EditPolicy
 
-from .SessionLog import CodexSessionLog, CommandLogEntry, FileChangeLogEntry, TurnLogEntry
+from .SessionLog import (
+    CodexSessionLog,
+    CommandLogEntry,
+    DynamicToolLogEntry,
+    FileChangeLogEntry,
+    TurnLogEntry,
+)
 
 
 class CodexAgentError(RuntimeError):
@@ -27,7 +33,45 @@ class CodexTurnResult:
     response_text: str
     commands: list[CommandLogEntry] = field(default_factory=list)
     file_changes: list[FileChangeLogEntry] = field(default_factory=list)
+    dynamic_tool_calls: list[DynamicToolLogEntry] = field(default_factory=list)
     errors_and_recoveries: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DynamicToolCallRequest:
+    call_id: str
+    thread_id: str
+    turn_id: str
+    tool: str
+    arguments: object
+
+
+@dataclass(frozen=True)
+class DynamicToolCallResult:
+    text: str
+    success: bool = True
+
+
+DynamicToolHandler = Callable[[DynamicToolCallRequest], DynamicToolCallResult]
+
+
+@dataclass(frozen=True)
+class CodexDynamicTool:
+    name: str
+    description: str
+    input_schema: object
+    handler: DynamicToolHandler
+    defer_loading: bool = False
+
+    def to_thread_start_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "name": self.name,
+            "description": self.description,
+            "inputSchema": self.input_schema,
+        }
+        if self.defer_loading:
+            payload["deferLoading"] = True
+        return payload
 
 
 @dataclass
@@ -119,10 +163,75 @@ class _FileChangeState:
 
 
 @dataclass
+class _DynamicToolCallState:
+    tool: str = ""
+    arguments: object = field(default_factory=dict)
+    status: str | None = None
+    success: bool | None = None
+    result_text: str = ""
+
+    def update_from_item(self, item: dict[str, Any]) -> None:
+        tool = item.get("tool")
+        if isinstance(tool, str) and tool:
+            self.tool = tool
+
+        if "arguments" in item:
+            self.arguments = item.get("arguments")
+
+        status = item.get("status")
+        if isinstance(status, str) and status:
+            self.status = status
+
+        success = item.get("success")
+        if isinstance(success, bool):
+            self.success = success
+
+        content_items = item.get("contentItems")
+        if isinstance(content_items, list):
+            formatted = self._format_content_items(content_items)
+            if formatted:
+                self.result_text = formatted
+
+    def set_response(self, result: DynamicToolCallResult) -> None:
+        self.success = result.success
+        self.result_text = result.text
+
+    def to_entry(self) -> DynamicToolLogEntry:
+        return DynamicToolLogEntry(
+            tool=self.tool or "(unknown tool)",
+            arguments=self._format_value(self.arguments),
+            status=self.status,
+            success=self.success,
+            result=self.result_text,
+        )
+
+    def _format_content_items(self, content_items: list[object]) -> str:
+        lines: list[str] = []
+        for item in content_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "inputText":
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    lines.append(text)
+                    continue
+            lines.append(json.dumps(item, ensure_ascii=False, indent=2))
+        return "\n".join(lines).strip()
+
+    def _format_value(self, value: object) -> str:
+        if value in ({}, None):
+            return "{}"
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+@dataclass
 class _TurnLogCollector:
     user_request: str
     command_states: dict[str, _CommandLogState] = field(default_factory=dict)
     file_change_states: dict[str, _FileChangeState] = field(default_factory=dict)
+    dynamic_tool_states: dict[str, _DynamicToolCallState] = field(default_factory=dict)
     errors_and_recoveries: list[str] = field(default_factory=list)
 
     def note_error(self, message: str) -> None:
@@ -143,17 +252,26 @@ class _TurnLogCollector:
             self.file_change_states[item_id] = state
         return state
 
+    def dynamic_tool_state(self, item_id: str) -> _DynamicToolCallState:
+        state = self.dynamic_tool_states.get(item_id)
+        if state is None:
+            state = _DynamicToolCallState()
+            self.dynamic_tool_states[item_id] = state
+        return state
+
     def to_entry(self, codex_response: str) -> TurnLogEntry:
         commands = [state.to_entry() for state in self.command_states.values()]
         file_changes: list[FileChangeLogEntry] = []
         for state in self.file_change_states.values():
             file_changes.extend(state.to_entries())
+        dynamic_tool_calls = [state.to_entry() for state in self.dynamic_tool_states.values()]
 
         return TurnLogEntry(
             user_request=self.user_request,
             codex_response=codex_response,
             commands=commands,
             file_changes=file_changes,
+            dynamic_tool_calls=dynamic_tool_calls,
             errors_and_recoveries=self.errors_and_recoveries.copy(),
         )
 
@@ -169,6 +287,7 @@ class CodexAgent:
         edit_policy: EditPolicy | None = None,
         environment: Mapping[str, str] | None = None,
         blocked_commands: tuple[str, ...] = (),
+        dynamic_tools: tuple[CodexDynamicTool, ...] = (),
     ) -> None:
         self._codex_executable = codex_executable or self._resolve_codex_executable()
         self._client_name = client_name
@@ -178,6 +297,8 @@ class CodexAgent:
         self._edit_policy = edit_policy
         self._environment = dict(environment) if environment is not None else None
         self._blocked_commands = tuple(entry for entry in blocked_commands if entry)
+        self._dynamic_tools = dynamic_tools
+        self._dynamic_tool_map = {tool.name: tool for tool in dynamic_tools}
         self._process: subprocess.Popen[str] | None = None
         self._next_request_id = 1
         self._pending_messages: deque[dict[str, Any]] = deque()
@@ -216,7 +337,8 @@ class CodexAgent:
                     "name": self._client_name,
                     "title": self._client_title,
                     "version": self._client_version,
-                }
+                },
+                "capabilities": {"experimentalApi": True},
             },
         )
         if not isinstance(initialize_result, dict):
@@ -245,6 +367,11 @@ class CodexAgent:
                 list(self._edit_policy.editable_rule_paths()),
                 list(self._edit_policy.non_editable_rule_paths()),
                 list(self._edit_policy.non_readable_rule_paths()),
+            )
+        if self._dynamic_tools:
+            self._session_log.append_dynamic_tool_registration(
+                self._thread_id,
+                [(tool.name, tool.description) for tool in self._dynamic_tools],
             )
 
     def end_session(self) -> None:
@@ -317,6 +444,7 @@ class CodexAgent:
                 response_text=turn_entry.codex_response,
                 commands=turn_entry.commands,
                 file_changes=turn_entry.file_changes,
+                dynamic_tool_calls=turn_entry.dynamic_tool_calls,
                 errors_and_recoveries=turn_entry.errors_and_recoveries,
             )
 
@@ -348,6 +476,7 @@ class CodexAgent:
                     codex_response=result.response_text,
                     commands=result.commands,
                     file_changes=result.file_changes,
+                    dynamic_tool_calls=result.dynamic_tool_calls,
                     errors_and_recoveries=result.errors_and_recoveries,
                 ),
                 status,
@@ -377,6 +506,8 @@ class CodexAgent:
                             collector.command_state(item_id).update_from_item(item)
                         elif item_type == "fileChange":
                             collector.file_change_state(item_id).update_from_item(item)
+                        elif item_type == "dynamicToolCall":
+                            collector.dynamic_tool_state(item_id).update_from_item(item)
                     continue
 
                 if method == "item/agentMessage/delta":
@@ -424,6 +555,17 @@ class CodexAgent:
                             file_change_state.update_from_item(item)
                             if file_change_state.status in {"failed", "declined"}:
                                 collector.note_error(f"File change item ended with status {file_change_state.status}.")
+                    elif item.get("type") == "dynamicToolCall":
+                        item_id = item.get("id")
+                        if isinstance(item_id, str) and item_id:
+                            dynamic_tool_state = collector.dynamic_tool_state(item_id)
+                            dynamic_tool_state.update_from_item(item)
+                            if dynamic_tool_state.status in {"failed", "declined"} or dynamic_tool_state.success is False:
+                                collector.note_error(
+                                    f"Dynamic tool `{dynamic_tool_state.tool or '(unknown tool)'}` ended with status "
+                                    f"{dynamic_tool_state.status or 'unknown'}."
+                                )
+                            self._session_log.append_dynamic_tool_completed(thread_id, dynamic_tool_state.to_entry())
                     continue
 
                 if method == "turn/completed":
@@ -583,17 +725,20 @@ class CodexAgent:
 
     def _build_thread_start_params(self, normalized_cwd: str | None) -> dict[str, Any]:
         if self._edit_policy is None:
-            return {
+            params: dict[str, Any] = {
                 "approvalPolicy": "never",
                 "cwd": normalized_cwd,
                 "sandbox": "danger-full-access",
             }
-
-        return {
-            "approvalPolicy": "on-request",
-            "cwd": normalized_cwd,
-            "sandbox": "workspace-write",
-        }
+        else:
+            params = {
+                "approvalPolicy": "on-request",
+                "cwd": normalized_cwd,
+                "sandbox": "workspace-write",
+            }
+        if self._dynamic_tools:
+            params["dynamicTools"] = [tool.to_thread_start_dict() for tool in self._dynamic_tools]
+        return params
 
     def _handle_server_request(
         self,
@@ -618,6 +763,11 @@ class CodexAgent:
 
         if method == "item/commandExecution/requestApproval":
             response = self._build_command_approval_response(params, collector)
+            self._write_message({"id": message["id"], "result": response})
+            return True
+
+        if method == "item/tool/call":
+            response = self._build_dynamic_tool_call_response(params, collector)
             self._write_message({"id": message["id"], "result": response})
             return True
 
@@ -786,3 +936,64 @@ class CodexAgent:
 
     def _normalize_command_text(self, value: str) -> str:
         return value.casefold()
+
+    def _build_dynamic_tool_call_response(
+        self,
+        params: dict[str, Any],
+        collector: _TurnLogCollector | None,
+    ) -> dict[str, object]:
+        call_id = params.get("callId")
+        thread_id = params.get("threadId")
+        turn_id = params.get("turnId")
+        tool_name = params.get("tool")
+        arguments = params.get("arguments")
+
+        if not all(isinstance(value, str) and value for value in (call_id, thread_id, turn_id, tool_name)):
+            result = DynamicToolCallResult(text="Dynamic tool call was malformed.", success=False)
+            return self._dynamic_tool_response_payload(result)
+
+        tool = self._dynamic_tool_map.get(tool_name)
+        state = collector.dynamic_tool_state(call_id) if collector is not None else None
+        if state is not None:
+            state.tool = tool_name
+            state.arguments = arguments
+
+        if tool is None:
+            result = DynamicToolCallResult(text=f"Unknown dynamic tool `{tool_name}`.", success=False)
+            if state is not None:
+                state.set_response(result)
+            if collector is not None:
+                collector.note_error(result.text)
+            return self._dynamic_tool_response_payload(result)
+
+        request = DynamicToolCallRequest(
+            call_id=call_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            tool=tool_name,
+            arguments=arguments,
+        )
+        try:
+            result = tool.handler(request)
+        except Exception as exc:
+            result = DynamicToolCallResult(
+                text=f"Dynamic tool `{tool_name}` failed unexpectedly: {exc}",
+                success=False,
+            )
+            if collector is not None:
+                collector.note_error(result.text)
+
+        if state is not None:
+            state.set_response(result)
+        return self._dynamic_tool_response_payload(result)
+
+    def _dynamic_tool_response_payload(self, result: DynamicToolCallResult) -> dict[str, object]:
+        return {
+            "success": result.success,
+            "contentItems": [
+                {
+                    "type": "inputText",
+                    "text": result.text,
+                }
+            ],
+        }

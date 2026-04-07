@@ -8,7 +8,7 @@ from typing import Mapping
 
 from src.EditPolicy import EditPolicy
 
-from .Agent import CodexAgent, CodexTurnResult
+from .Agent import CodexAgent, CodexDynamicTool, CodexTurnResult
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,7 @@ class CodexSessionRunner:
         edit_policy: EditPolicy | None = None,
         environment: Mapping[str, str] | None = None,
         blocked_commands: tuple[str, ...] = (),
+        dynamic_tools: tuple[CodexDynamicTool, ...] = (),
     ) -> CodexSessionRunResult:
         agent = CodexAgent(
             codex_executable=self._codex_executable,
@@ -46,6 +47,7 @@ class CodexSessionRunner:
             edit_policy=edit_policy,
             environment=environment,
             blocked_commands=blocked_commands,
+            dynamic_tools=dynamic_tools,
         )
         try:
             agent.start_session(str(cwd))

@@ -1,23 +1,34 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Mapping
 
-from src.Agents.Codex import CodexAgentError, CodexSessionRunner
+from src.Agents.Codex import (
+    CodexAgentError,
+    CodexDynamicTool,
+    CodexSessionRunner,
+    DynamicToolCallRequest,
+    DynamicToolCallResult,
+)
 from src.Agents.Codex.SessionLog import CodexSessionLog
 from src.EditPolicy import EditPolicy
 
 from .EvaluationRunner import EvaluationRunner
+from .ExperimentBootstrap import resolve_evaluation_file_path
+from .ExperimentEvalTool import ORCHESTRATOR_RUN_EVAL_TOOL, ExperimentEvalTool
 from .ExperimentLedger import ExperimentLedger
 from .ExperimentPrompts import build_experiment_prompt
 from .ExperimentRunDocs import build_run_docs
 from .ExperimentRunSupport import (
     append_post_run_review,
     blocked_commands_for_run,
+    build_effective_non_readable_paths,
     build_agent_sparse_patterns,
     build_edit_policy,
     cleanup_experiment_workspaces,
+    docs_excluded_patch_paths,
     print_edit_policy,
     remove_run_docs,
     write_run_docs,
@@ -68,6 +79,17 @@ def run_iteration(
 ) -> ExperimentIterationResult:
     current_base_ref = best_branch_name if workspace.branch_exists(best_branch_name) else start_ref
     current_base_commit = workspace.rev_parse(current_base_ref)
+    evaluation_file = resolve_evaluation_file_path(
+        target_path,
+        config.evaluation_command,
+        config.evaluation_file_path,
+    )
+    evaluation_relative_path = evaluation_file.relative_to(target_path)
+    effective_non_readable_paths = build_effective_non_readable_paths(
+        target_relative_path,
+        evaluation_relative_path,
+        config.non_readable_paths,
+    )
     branch_name = f"exp/{objective_slug}/{run_id}"
     run_root = worktrees_root / objective_slug / run_id
     orchestrator_worktree_path = run_root / "orchestrator"
@@ -95,7 +117,9 @@ def run_iteration(
         orchestrator_edit_policy = build_edit_policy(
             orchestrator_worktree_path,
             orchestrator_cwd,
-            config,
+            config.editable_paths,
+            config.non_editable_paths,
+            effective_non_readable_paths,
         )
         sparse_patterns = build_agent_sparse_patterns(
             workspace,
@@ -125,15 +149,33 @@ def run_iteration(
         agent_edit_policy = build_edit_policy(
             agent_worktree_path,
             agent_cwd,
-            config,
+            config.editable_paths,
+            config.non_editable_paths,
+            effective_non_readable_paths,
         )
         print_edit_policy(agent_edit_policy)
+        eval_tool = ExperimentEvalTool(
+            workspace=workspace,
+            agent_worktree_path=agent_worktree_path,
+            orchestrator_worktree_path=orchestrator_worktree_path,
+            target_relative_path=target_relative_path,
+            current_base_commit=current_base_commit,
+            evaluation_command=config.evaluation_command,
+            optimization_direction=config.optimization_direction,
+            best_score=best_score,
+            start_score=best_score,
+            evaluation_runner=evaluation_runner,
+            environment=target_environment,
+            budget=config.agent_eval_budget,
+            excluded_patch_paths=docs_excluded_patch_paths(target_relative_path),
+        )
         session_result = codex_session_runner.run(
             agent_cwd,
-            _build_experiment_instruction(config.objective_name, agent_edit_policy),
+            _build_experiment_instruction(config.objective_name, config.agent_eval_budget, agent_edit_policy),
             edit_policy=agent_edit_policy,
             environment=target_environment,
-            blocked_commands=blocked_commands_for_run(config),
+            blocked_commands=blocked_commands_for_run(config.evaluation_command, effective_non_readable_paths),
+            dynamic_tools=(_build_eval_dynamic_tool(eval_tool),),
         )
         response_text = session_result.turn_result.response_text
         strategy, why_it_should_help = _build_summary_fields(session_result.turn_result.response_text)
@@ -142,19 +184,14 @@ def run_iteration(
         run_notes = tuple(session_result.turn_result.errors_and_recoveries)
         app_server_file_changes = len(session_result.turn_result.file_changes)
         remove_run_docs(docs_dir)
-        workspace.apply_patch(
-            orchestrator_worktree_path,
-            workspace.diff_against_ref(agent_worktree_path, current_base_commit),
-        )
-
-        evaluation_outcome = evaluation_runner.run(
-            orchestrator_cwd,
-            config.evaluation_command,
-            environment=target_environment,
-        )
-        score = evaluation_outcome.score
-        evaluation_stdout = evaluation_outcome.stdout
-        evaluation_stderr = evaluation_outcome.stderr
+        final_evaluation = eval_tool.finalize_candidate()
+        score = final_evaluation.score
+        evaluation_stdout = final_evaluation.stdout
+        evaluation_stderr = final_evaluation.stderr
+        if final_evaluation.failure_message is not None:
+            raise ExperimentOrchestratorError(final_evaluation.failure_message)
+        if score is None:
+            raise ExperimentOrchestratorError("Final evaluation did not produce a score.")
         score_delta = _score_delta(score, best_score, config.optimization_direction)
         improved = _is_improvement(score, best_score, config.optimization_direction)
         status = "improved" if improved else "not_improved"
@@ -265,8 +302,51 @@ def _score_delta(score: float, best_score: float, optimization_direction: str) -
     raise ValueError(f"Unsupported optimization_direction: {optimization_direction}")
 
 
-def _build_experiment_instruction(objective_name: str, edit_policy: EditPolicy) -> str:
-    return f"{edit_policy.prompt_prefix()}\n\n{build_experiment_prompt(objective_name=objective_name)}"
+def _build_experiment_instruction(
+    objective_name: str,
+    agent_eval_budget: int,
+    edit_policy: EditPolicy,
+) -> str:
+    return (
+        f"{edit_policy.prompt_prefix()}\n\n"
+        f"{build_experiment_prompt(objective_name=objective_name, agent_eval_budget=agent_eval_budget)}"
+    )
+
+
+def _build_eval_dynamic_tool(eval_tool: ExperimentEvalTool) -> CodexDynamicTool:
+    return CodexDynamicTool(
+        name=ORCHESTRATOR_RUN_EVAL_TOOL,
+        description=(
+            "Run the orchestrator-managed evaluation on the current candidate state and return sanitized score "
+            "feedback without exposing evaluator internals."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        handler=lambda request: _run_eval_dynamic_tool(eval_tool, request),
+    )
+
+
+def _run_eval_dynamic_tool(eval_tool: ExperimentEvalTool, request: DynamicToolCallRequest) -> DynamicToolCallResult:
+    if request.arguments not in (None, {}):
+        return DynamicToolCallResult(
+            text=json.dumps(
+                {
+                    "status": "evaluation_failed",
+                    "score": None,
+                    "delta_vs_best": None,
+                    "delta_vs_start": None,
+                    "budget_remaining": eval_tool.budget_remaining,
+                    "note": "This tool does not accept arguments.",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            success=False,
+        )
+    return DynamicToolCallResult(text=eval_tool.evaluate_current_candidate().to_tool_text())
 
 
 def _build_summary_fields(response_text: str) -> tuple[str, str]:

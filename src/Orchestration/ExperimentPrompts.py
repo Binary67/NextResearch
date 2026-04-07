@@ -17,9 +17,11 @@ def build_evaluation_spec_prompt(evaluation_command: str, evaluation_relative_pa
     )
 
 
-def build_experiment_prompt(objective_name: str) -> str:
+def build_experiment_prompt(objective_name: str, agent_eval_budget: int, eval_tool_name: str = "orchestrator_run_eval") -> str:
     return _load_prompt_template("Experiment Prompt").format(
         objective_name=objective_name,
+        agent_eval_budget=agent_eval_budget,
+        eval_tool_name=eval_tool_name,
         running_instructions_path=".nextresearch/RUNNING_INSTRUCTIONS.md",
         evaluation_spec_path=".nextresearch/EVALUATION_SPEC.md",
         baseline_state_path=".nextresearch/BASELINE_STATE.md",

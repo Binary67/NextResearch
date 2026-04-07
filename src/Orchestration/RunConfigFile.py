@@ -13,6 +13,7 @@ objective_name = "maximize-evaluation-score"
 evaluation_command = "uv run evaluation.py"
 iteration_count = 3
 optimization_direction = "minimize"
+agent_eval_budget = 3
 
 # Optional examples:
 # evaluation_file_path = "evaluation.py"
@@ -61,6 +62,12 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
     if not isinstance(iteration_count, int) or isinstance(iteration_count, bool):
         errors.append("iteration_count must be an integer.")
 
+    agent_eval_budget = raw_config.get("agent_eval_budget", 3)
+    if not isinstance(agent_eval_budget, int) or isinstance(agent_eval_budget, bool):
+        errors.append("agent_eval_budget must be an integer.")
+    elif agent_eval_budget < 1:
+        errors.append("agent_eval_budget must be at least 1.")
+
     for key in ("evaluation_file_path", "baseline_branch"):
         if key in raw_config:
             value = raw_config[key]
@@ -91,6 +98,7 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
         evaluation_command=raw_config["evaluation_command"],
         iteration_count=iteration_count,
         optimization_direction=raw_config["optimization_direction"],
+        agent_eval_budget=agent_eval_budget,
         evaluation_file_path=raw_config.get("evaluation_file_path"),
         baseline_branch=raw_config.get("baseline_branch"),
         editable_paths=raw_config.get("editable_paths", ()),

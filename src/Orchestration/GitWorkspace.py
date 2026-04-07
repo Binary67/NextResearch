@@ -114,9 +114,18 @@ class GitWorkspaceManager:
             if entry
         ]
 
-    def diff_against_ref(self, worktree_path: Path, ref: str) -> bytes:
+    def diff_against_ref(
+        self,
+        worktree_path: Path,
+        ref: str,
+        exclude_paths: tuple[str, ...] = (),
+    ) -> bytes:
         self.run_git(worktree_path, "add", "--sparse", "-A")
-        return self.git_output_bytes(worktree_path, "diff", "--cached", "--binary", ref)
+        args = ["diff", "--cached", "--binary", ref]
+        if exclude_paths:
+            args.extend(["--", "."])
+            args.extend(f":(exclude){path}" for path in exclude_paths if path)
+        return self.git_output_bytes(worktree_path, *args)
 
     def apply_patch(self, worktree_path: Path, patch: bytes) -> None:
         if not patch.strip():
@@ -133,6 +142,11 @@ class GitWorkspaceManager:
             stdout = completed.stdout.decode("utf-8", errors="replace").strip()
             message = stderr or stdout or "git apply failed"
             raise ExperimentOrchestratorError(f"Patch application failed: {message}")
+
+    def reset_worktree_to_ref(self, worktree_path: Path, ref: str, clean_untracked: bool = False) -> None:
+        self.run_git(worktree_path, "reset", "--hard", ref)
+        if clean_untracked:
+            self.run_git(worktree_path, "clean", "-fd")
 
     def git_output(self, cwd: Path, *args: str) -> str:
         completed = subprocess.run(
