@@ -85,15 +85,19 @@ def append_post_run_review(
 def build_edit_policy(
     worktree_path: Path,
     session_cwd: Path,
+    target_relative_path: Path,
     editable_paths: tuple[str, ...],
     non_editable_paths: tuple[str, ...],
     non_readable_paths: tuple[str, ...],
 ) -> EditPolicy:
+    effective_non_editable_paths = tuple(
+        dict.fromkeys((*non_editable_paths, *orchestrator_managed_paths(target_relative_path)))
+    )
     return EditPolicy.from_paths(
         worktree_path,
         session_cwd=session_cwd,
         editable_paths=editable_paths,
-        non_editable_paths=non_editable_paths,
+        non_editable_paths=effective_non_editable_paths,
         non_readable_paths=non_readable_paths,
     )
 
@@ -109,9 +113,9 @@ def build_agent_sparse_patterns(
         for path in workspace.list_tracked_paths(orchestrator_worktree_path)
         if edit_policy.evaluate_read_path(orchestrator_worktree_path / path).allowed
     ]
-    docs_pattern = _docs_sparse_pattern(target_relative_path)
-    if docs_pattern not in patterns:
-        patterns.append(docs_pattern)
+    for managed_path in orchestrator_managed_paths(target_relative_path):
+        if managed_path not in patterns:
+            patterns.append(managed_path)
     return patterns
 
 
@@ -141,7 +145,29 @@ def build_effective_non_readable_paths(
 
 
 def docs_excluded_patch_paths(target_relative_path: Path) -> tuple[str, ...]:
-    return (_target_scoped_path(target_relative_path, Path(".nextresearch")),)
+    return orchestrator_managed_paths(target_relative_path)
+
+
+def orchestrator_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
+    return tuple(
+        _directory_path(_target_scoped_path(target_relative_path, Path(relative_path)))
+        for relative_path in orchestrator_managed_session_paths()
+    )
+
+
+def orchestrator_managed_session_paths() -> tuple[str, ...]:
+    return (".nextresearch/",)
+
+
+def is_orchestrator_managed_session_path(path: str) -> bool:
+    normalized_path = _normalize_path_for_matching(path)
+    for managed_path in orchestrator_managed_session_paths():
+        normalized_managed_path = _normalize_path_for_matching(managed_path)
+        if normalized_path == normalized_managed_path.rstrip("/"):
+            return True
+        if normalized_path.startswith(normalized_managed_path):
+            return True
+    return False
 
 
 def _staged_text_paths_for_log(
@@ -180,13 +206,6 @@ def _staged_text_paths_for_log(
     return text_paths
 
 
-def _docs_sparse_pattern(target_relative_path: Path) -> str:
-    target_prefix = target_relative_path.as_posix().strip("/")
-    if not target_prefix or target_prefix == ".":
-        return ".nextresearch/"
-    return f"{target_prefix}/.nextresearch/"
-
-
 def _target_scoped_path(target_relative_path: Path, relative_path: Path) -> str:
     target_prefix = target_relative_path.as_posix().strip("/")
     scoped_path = relative_path.as_posix().strip("/")
@@ -195,3 +214,14 @@ def _target_scoped_path(target_relative_path: Path, relative_path: Path) -> str:
     if not scoped_path:
         return target_prefix
     return f"{target_prefix}/{scoped_path}"
+
+
+def _directory_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip()
+    if not normalized:
+        return normalized
+    return normalized.rstrip("/") + "/"
+
+
+def _normalize_path_for_matching(path: str) -> str:
+    return path.replace("\\", "/").strip().strip("/")

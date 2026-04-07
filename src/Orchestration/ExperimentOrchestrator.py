@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.Agents.Codex import CodexSessionRunner
 from src.Agents.Codex.SessionLog import CodexSessionLog
+from src.EditPolicy import EditPolicy
 
 from .ExperimentBootstrap import bootstrap_artifacts as generate_bootstrap_artifacts
 from .EvaluationRunner import EvaluationRunner
@@ -92,6 +93,7 @@ class ExperimentOrchestrator:
             raise ValueError("iteration_count must be at least 1.")
 
         context = self._resolve_repo_context(config.target_repo_path)
+        self._validate_config_path_rules(context.repo_root, config)
         objective_slug = self._slugify(config.objective_name)
         target_environment = build_target_environment(self._cache_root)
         workspace = GitWorkspaceManager(context.repo_root, self._worktrees_root)
@@ -181,6 +183,19 @@ class ExperimentOrchestrator:
         if current_branch:
             return current_branch
         return workspace.rev_parse("HEAD")
+
+    def _validate_config_path_rules(self, repo_root: Path, config: ExperimentRunConfig) -> None:
+        errors = EditPolicy.validate_config_paths(
+            repo_root=repo_root,
+            editable_paths=config.editable_paths,
+            non_editable_paths=config.non_editable_paths,
+            non_readable_paths=config.non_readable_paths,
+        )
+        if not errors:
+            return
+
+        formatted_errors = "\n".join(f"- {error}" for error in errors)
+        raise ValueError(f"Invalid edit policy paths in config:\n{formatted_errors}")
 
     def _slugify(self, value: str) -> str:
         slug = re.sub(r"[^A-Za-z0-9._/-]+", "-", value.strip().lower()).strip("-./")

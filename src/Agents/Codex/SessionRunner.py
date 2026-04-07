@@ -57,6 +57,7 @@ class CodexSessionRunner:
             if edit_policy is not None:
                 current_snapshot = self._snapshot_git_changes(cwd)
                 changed_paths = self._collect_session_changed_paths(baseline_snapshot, current_snapshot)
+                changed_paths = self._exclude_orchestrator_managed_paths(changed_paths)
                 violations = edit_policy.find_disallowed_write_paths(changed_paths)
                 if violations:
                     violation_message = "; ".join(
@@ -124,6 +125,11 @@ class CodexSessionRunner:
                 continue
             changed_paths.append(path)
         return changed_paths
+
+    def _exclude_orchestrator_managed_paths(self, paths: list[str]) -> list[str]:
+        from src.Orchestration.ExperimentRunSupport import is_orchestrator_managed_session_path
+
+        return [path for path in paths if not is_orchestrator_managed_session_path(path)]
 
     def _record_snapshot(
         self,

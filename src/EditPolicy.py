@@ -92,6 +92,27 @@ class EditPolicy:
             hidden_rules=hidden_rules,
         )
 
+    @classmethod
+    def validate_config_paths(
+        cls,
+        repo_root: Path | str,
+        editable_paths: tuple[str, ...] = (),
+        non_editable_paths: tuple[str, ...] = (),
+        non_readable_paths: tuple[str, ...] = (),
+    ) -> tuple[str, ...]:
+        root = Path(repo_root).expanduser().resolve()
+        if not root.exists():
+            raise ValueError(f"repo_root does not exist: {repo_root}")
+        if not root.is_dir():
+            raise ValueError(f"repo_root is not a directory: {repo_root}")
+
+        errors = [
+            *cls._validate_rule_targets(root, "editable_paths", editable_paths, allow_missing_leaf=True),
+            *cls._validate_rule_targets(root, "non_editable_paths", non_editable_paths, allow_missing_leaf=False),
+            *cls._validate_rule_targets(root, "non_readable_paths", non_readable_paths, allow_missing_leaf=False),
+        ]
+        return tuple(errors)
+
     @property
     def mode_label(self) -> str:
         if self.allow_rules:
@@ -225,6 +246,69 @@ class EditPolicy:
                 raise ValueError(f"{field_name} entries must be non-empty strings.")
             normalized.append(stripped)
         return tuple(normalized)
+
+    @classmethod
+    def _validate_rule_targets(
+        cls,
+        repo_root: Path,
+        field_name: str,
+        raw_paths: tuple[str, ...],
+        *,
+        allow_missing_leaf: bool,
+    ) -> tuple[str, ...]:
+        normalized_paths = cls._validate_rule_paths(field_name, raw_paths)
+        errors: list[str] = []
+        for raw_path in normalized_paths:
+            try:
+                cls._build_rule(repo_root, raw_path)
+            except ValueError as exc:
+                errors.append(f"{field_name} `{raw_path}` is invalid: {exc}")
+                continue
+
+            candidate = Path(raw_path)
+            source_path = repo_root / candidate
+            if source_path.exists():
+                continue
+
+            is_directory_rule = raw_path.endswith(("/", "\\"))
+            if allow_missing_leaf and not is_directory_rule and source_path.parent.is_dir():
+                continue
+
+            errors.append(
+                cls._missing_path_error(
+                    repo_root,
+                    field_name,
+                    raw_path,
+                    source_path,
+                    allow_missing_leaf=allow_missing_leaf,
+                )
+            )
+        return tuple(errors)
+
+    @classmethod
+    def _missing_path_error(
+        cls,
+        repo_root: Path,
+        field_name: str,
+        raw_path: str,
+        source_path: Path,
+        *,
+        allow_missing_leaf: bool,
+    ) -> str:
+        if not allow_missing_leaf:
+            return f"{field_name} `{raw_path}` does not exist."
+
+        if raw_path.endswith(("/", "\\")):
+            return f"{field_name} `{raw_path}` does not exist."
+
+        parent_relative = cls._display_path_from_relative(
+            source_path.parent.resolve(strict=False).relative_to(repo_root)
+        )
+        parent_display = parent_relative or "./"
+        return (
+            f"{field_name} `{raw_path}` does not exist, and its parent directory "
+            f"`{parent_display}` does not exist."
+        )
 
     @classmethod
     def _build_rule(cls, repo_root: Path, raw_path: str) -> EditPolicyRule:

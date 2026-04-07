@@ -117,6 +117,7 @@ def run_iteration(
         orchestrator_edit_policy = build_edit_policy(
             orchestrator_worktree_path,
             orchestrator_cwd,
+            target_relative_path,
             config.editable_paths,
             config.non_editable_paths,
             effective_non_readable_paths,
@@ -149,6 +150,7 @@ def run_iteration(
         agent_edit_policy = build_edit_policy(
             agent_worktree_path,
             agent_cwd,
+            target_relative_path,
             config.editable_paths,
             config.non_editable_paths,
             effective_non_readable_paths,
