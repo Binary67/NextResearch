@@ -14,6 +14,7 @@ from .EvaluationRunner import EvaluationRunner
 from .ExperimentLedger import ExperimentLedger
 from .ExperimentIterationRunner import run_iteration, score_reference
 from .ExperimentRunSupport import build_target_environment
+from .ExperimentVisualization import progress_chart_path, write_experiment_progress_svg
 from .GitWorkspace import GitWorkspaceManager
 from .Models import BootstrapArtifacts, ExperimentIterationResult, ExperimentOrchestratorError, ExperimentRunConfig
 
@@ -144,6 +145,14 @@ class ExperimentOrchestrator:
                 best_score = result.score
             results.append(result)
 
+        ledger_entries = self._ledger.load_entries(config.objective_name)
+        write_experiment_progress_svg(
+            entries=ledger_entries,
+            objective_name=config.objective_name,
+            objective_slug=objective_slug,
+            optimization_direction=config.optimization_direction,
+            output_path=progress_chart_path(self._logs_root, objective_slug),
+        )
         return results
 
     def load_ledger_entries(self, objective_name: str | None = None) -> list[dict[str, object]]:

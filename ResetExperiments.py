@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from src.Orchestration.ExperimentVisualization import progress_chart_path
+
 
 TARGET_REPO_PATH = "D:/HousePricePrediction"
 OBJECTIVE_NAME = "maximize-evaluation-score"
@@ -27,6 +29,7 @@ def reset_experiment_state(
     removed_branch_count = 0
     removed_session_logs = 0
     removed_ledger_entries = 0
+    removed_progress_chart = 0
 
     _run_git(repo_root, "worktree", "prune")
 
@@ -61,6 +64,7 @@ def reset_experiment_state(
             "removed_worktree_directory": removed_worktree_directory,
             "removed_ledger_entries": 0,
             "removed_session_logs": 0,
+            "removed_progress_chart": 0,
             "removed_logs_directory": removed_logs_directory,
         }
 
@@ -96,12 +100,18 @@ def reset_experiment_state(
                 session_log_path.unlink()
                 removed_session_logs += 1
 
+    objective_chart_path = progress_chart_path(resolved_logs_root, objective_slug)
+    if objective_chart_path.exists():
+        objective_chart_path.unlink()
+        removed_progress_chart = 1
+
     return {
         "removed_registered_worktrees": removed_registered_worktrees,
         "removed_branches": removed_branch_count,
         "removed_worktree_directory": removed_worktree_directory,
         "removed_ledger_entries": removed_ledger_entries,
         "removed_session_logs": removed_session_logs,
+        "removed_progress_chart": removed_progress_chart,
         "removed_logs_directory": removed_logs_directory,
     }
 

@@ -30,6 +30,8 @@ Update it when adding, removing, renaming, or moving core modules.
   - Runs the external evaluator and parses the score.
 - `src/Orchestration/ExperimentLedger.py`
   - Appends and reads the JSONL experiment ledger.
+- `src/Orchestration/ExperimentVisualization.py`
+  - Regenerates the per-objective SVG progress chart from ledger history.
 
 ### Prompting And Run Documents
 - `PromptTemplates.md`
@@ -65,7 +67,7 @@ Update it when adding, removing, renaming, or moving core modules.
 - `config.toml`
   - Local run configuration created on first `uv run Main.py`.
 - `Logs/`
-  - Runtime logs, session logs, experiment ledger, and temporary worktrees.
+  - Runtime logs, session logs, experiment ledger, progress SVGs, and temporary worktrees.
 - `Cache/`
   - Cached generated artifacts.
 - `__pycache__/`, `.venv/`, `.pytest_cache/`
