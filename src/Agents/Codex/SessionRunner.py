@@ -22,6 +22,21 @@ class _GitPathSnapshot:
     status: str
     fingerprint: str
 
+    @property
+    def is_tracked(self) -> bool:
+        return self.status != "??"
+
+
+@dataclass(frozen=True)
+class _SessionPathChange:
+    path: str
+    current_status: str
+    baseline_status: str | None
+
+    @property
+    def is_new_untracked(self) -> bool:
+        return self.current_status == "??" and self.baseline_status is None
+
 
 class CodexSessionRunner:
     def __init__(
@@ -57,8 +72,8 @@ class CodexSessionRunner:
             if edit_policy is not None:
                 current_snapshot = self._snapshot_git_changes(cwd)
                 changed_paths = self._collect_session_changed_paths(baseline_snapshot, current_snapshot)
-                changed_paths = self._exclude_orchestrator_managed_paths(changed_paths)
-                violations = edit_policy.find_disallowed_write_paths(changed_paths)
+                candidate_paths = self._policy_candidate_paths(changed_paths)
+                violations = edit_policy.find_disallowed_write_paths(candidate_paths)
                 if violations:
                     violation_message = "; ".join(
                         f"{entry.display_path}: {entry.reason}" for entry in violations
@@ -118,18 +133,33 @@ class CodexSessionRunner:
         self,
         baseline_snapshot: dict[str, _GitPathSnapshot],
         current_snapshot: dict[str, _GitPathSnapshot],
-    ) -> list[str]:
-        changed_paths: list[str] = []
+    ) -> list[_SessionPathChange]:
+        changed_paths: list[_SessionPathChange] = []
         for path in sorted(set(baseline_snapshot) | set(current_snapshot)):
             if baseline_snapshot.get(path) == current_snapshot.get(path):
                 continue
-            changed_paths.append(path)
+            current_entry = current_snapshot.get(path)
+            changed_paths.append(
+                _SessionPathChange(
+                    path=path,
+                    current_status=current_entry.status if current_entry is not None else "missing",
+                    baseline_status=baseline_snapshot.get(path).status if path in baseline_snapshot else None,
+                )
+            )
         return changed_paths
 
-    def _exclude_orchestrator_managed_paths(self, paths: list[str]) -> list[str]:
-        from src.Orchestration.ExperimentRunSupport import is_orchestrator_managed_session_path
+    def _policy_candidate_paths(self, changes: list[_SessionPathChange]) -> list[str]:
+        candidate_paths: list[str] = []
+        for change in changes:
+            if not self._was_tracked_at_session_start(change):
+                continue
+            candidate_paths.append(change.path)
+        return candidate_paths
 
-        return [path for path in paths if not is_orchestrator_managed_session_path(path)]
+    def _was_tracked_at_session_start(self, change: _SessionPathChange) -> bool:
+        if change.baseline_status is None:
+            return False
+        return change.baseline_status != "??"
 
     def _record_snapshot(
         self,

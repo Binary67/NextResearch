@@ -361,12 +361,25 @@ class CodexAgent:
         self._thread_id = self._extract_thread_id_from_session_result(result, "thread/start")
         self._session_log.append_session_started(self._thread_id, normalized_cwd)
         if self._edit_policy is not None:
+            runtime_managed_paths: list[str] = []
+            if normalized_cwd is not None:
+                try:
+                    from src.Orchestration.ExperimentRunSupport import runtime_managed_session_paths
+
+                    runtime_managed_paths = list(runtime_managed_session_paths())
+                except Exception:
+                    runtime_managed_paths = []
             self._session_log.append_edit_policy(
                 self._thread_id,
                 self._edit_policy.mode_label,
                 list(self._edit_policy.editable_rule_paths()),
-                list(self._edit_policy.non_editable_rule_paths()),
+                [
+                    path
+                    for path in self._edit_policy.non_editable_rule_paths()
+                    if path not in runtime_managed_paths
+                ],
                 list(self._edit_policy.non_readable_rule_paths()),
+                runtime_managed_paths=runtime_managed_paths,
             )
         if self._dynamic_tools:
             self._session_log.append_dynamic_tool_registration(

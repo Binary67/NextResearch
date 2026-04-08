@@ -185,32 +185,36 @@ def docs_excluded_patch_paths(target_relative_path: Path) -> tuple[str, ...]:
     return orchestrator_managed_paths(target_relative_path)
 
 
-def orchestrator_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
+def runtime_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
     return tuple(
         _directory_path(_target_scoped_path(target_relative_path, Path(relative_path)))
-        for relative_path in orchestrator_managed_session_paths()
+        for relative_path in runtime_managed_session_paths()
     )
 
 
-def orchestrator_managed_session_paths() -> tuple[str, ...]:
+def orchestrator_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
+    return runtime_managed_paths(target_relative_path)
+
+
+def runtime_managed_session_paths() -> tuple[str, ...]:
     return (
         ".nextresearch/",
-        ".uv-cache/",
-        ".uv-python/",
-        ".venv/",
-        "__pycache__/",
     )
 
 
-def is_orchestrator_managed_session_path(path: str) -> bool:
+def is_runtime_managed_session_path(path: str) -> bool:
     normalized_path = _normalize_path_for_matching(path)
-    for managed_path in orchestrator_managed_session_paths():
+    for managed_path in runtime_managed_session_paths():
         normalized_managed_path = _normalize_path_for_matching(managed_path)
         if normalized_path == normalized_managed_path.rstrip("/"):
             return True
         if normalized_path.startswith(normalized_managed_path):
             return True
     return False
+
+
+def is_orchestrator_managed_session_path(path: str) -> bool:
+    return is_runtime_managed_session_path(path)
 
 
 def _staged_text_paths_for_log(
