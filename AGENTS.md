@@ -3,6 +3,7 @@
 1. Use `uv run` to run any python file
 2. Use `uv add` to add any python dependencies
 3. You are not required to create any unit tests
+4. If you need to run `uv run Main.py` ask user to run it as it is taking a long time to run. 
 
 ## Source Map
 

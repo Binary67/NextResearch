@@ -50,14 +50,49 @@ def print_edit_policy(edit_policy: EditPolicy) -> None:
     print(f"Codex non_readable_paths={non_readable_text}")
 
 
-def build_target_environment(cache_root: Path) -> dict[str, str]:
+def build_shared_target_environment(cache_root: Path) -> dict[str, str]:
     environment = os.environ.copy()
-    for key in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH", "CONDA_PREFIX"):
+    for key in (
+        "VIRTUAL_ENV",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "CONDA_PREFIX",
+        "UV_CACHE_DIR",
+        "UV_PYTHON",
+        "UV_PYTHON_INSTALL_DIR",
+        "UV_MANAGED_PYTHON",
+        "UV_NO_MANAGED_PYTHON",
+    ):
         environment.pop(key, None)
 
     uv_cache_dir = cache_root / "uv"
     uv_cache_dir.mkdir(parents=True, exist_ok=True)
     environment["UV_CACHE_DIR"] = str(uv_cache_dir)
+    return environment
+
+
+def build_agent_target_environment(agent_cwd: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    for key in (
+        "VIRTUAL_ENV",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "CONDA_PREFIX",
+        "UV_CACHE_DIR",
+        "UV_PYTHON",
+        "UV_PYTHON_INSTALL_DIR",
+        "UV_MANAGED_PYTHON",
+        "UV_NO_MANAGED_PYTHON",
+    ):
+        environment.pop(key, None)
+
+    uv_cache_dir = agent_cwd / ".uv-cache"
+    uv_python_install_dir = agent_cwd / ".uv-python"
+    uv_cache_dir.mkdir(parents=True, exist_ok=True)
+    uv_python_install_dir.mkdir(parents=True, exist_ok=True)
+    environment["UV_CACHE_DIR"] = str(uv_cache_dir)
+    environment["UV_PYTHON_INSTALL_DIR"] = str(uv_python_install_dir)
+    environment["UV_MANAGED_PYTHON"] = "1"
     return environment
 
 
@@ -158,7 +193,13 @@ def orchestrator_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
 
 
 def orchestrator_managed_session_paths() -> tuple[str, ...]:
-    return (".nextresearch/",)
+    return (
+        ".nextresearch/",
+        ".uv-cache/",
+        ".uv-python/",
+        ".venv/",
+        "__pycache__/",
+    )
 
 
 def is_orchestrator_managed_session_path(path: str) -> bool:

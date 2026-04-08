@@ -13,7 +13,7 @@ from .ExperimentBootstrap import bootstrap_artifacts as generate_bootstrap_artif
 from .EvaluationRunner import EvaluationRunner
 from .ExperimentLedger import ExperimentLedger
 from .ExperimentIterationRunner import run_iteration, score_reference
-from .ExperimentRunSupport import build_target_environment
+from .ExperimentRunSupport import build_shared_target_environment
 from .ExperimentVisualization import progress_chart_path, write_experiment_progress_svg
 from .GitWorkspace import GitWorkspaceManager
 from .Models import BootstrapArtifacts, ExperimentIterationResult, ExperimentOrchestratorError, ExperimentRunConfig
@@ -70,7 +70,7 @@ class ExperimentOrchestrator:
     ) -> BootstrapArtifacts:
         context = self._resolve_repo_context(target_repo_path)
         objective_slug = self._slugify(objective_name)
-        target_environment = build_target_environment(self._cache_root)
+        target_environment = build_shared_target_environment(self._cache_root)
         workspace = GitWorkspaceManager(context.repo_root, self._worktrees_root)
         workspace.ensure_clean_repo()
         bootstrap_ref = self._resolve_start_ref(workspace, objective_slug, baseline_branch)
@@ -96,7 +96,7 @@ class ExperimentOrchestrator:
         context = self._resolve_repo_context(config.target_repo_path)
         self._validate_config_path_rules(context.repo_root, config)
         objective_slug = self._slugify(config.objective_name)
-        target_environment = build_target_environment(self._cache_root)
+        target_environment = build_shared_target_environment(self._cache_root)
         workspace = GitWorkspaceManager(context.repo_root, self._worktrees_root)
         workspace.ensure_clean_repo()
         best_branch_name = f"best/{objective_slug}"

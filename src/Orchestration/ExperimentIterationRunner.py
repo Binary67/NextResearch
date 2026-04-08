@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import os
 from pathlib import Path
 from typing import Mapping
 
@@ -23,6 +26,7 @@ from .ExperimentPrompts import build_experiment_prompt
 from .ExperimentRunDocs import build_run_docs
 from .ExperimentRunSupport import (
     append_post_run_review,
+    build_agent_target_environment,
     blocked_commands_for_run,
     build_effective_non_readable_paths,
     build_agent_sparse_patterns,
@@ -136,6 +140,8 @@ def run_iteration(
             sparse_patterns,
         )
         agent_cwd.mkdir(parents=True, exist_ok=True)
+        agent_environment = build_agent_target_environment(agent_cwd)
+        _bootstrap_agent_environment(agent_cwd, agent_environment, target_environment)
         write_run_docs(
             docs_dir,
             build_run_docs(
@@ -177,7 +183,7 @@ def run_iteration(
             agent_cwd,
             _build_experiment_instruction(config.objective_name, config.agent_eval_budget, agent_edit_policy),
             edit_policy=agent_edit_policy,
-            environment=target_environment,
+            environment=agent_environment,
             blocked_commands=blocked_commands_for_run(config.evaluation_command, effective_non_readable_paths),
             dynamic_tools=(_build_eval_dynamic_tool(eval_tool),),
         )
@@ -407,3 +413,118 @@ def _build_changed_files(file_changes: list[object]) -> tuple[str, ...]:
         paths.append(normalized)
 
     return tuple(paths)
+
+
+def _bootstrap_agent_environment(
+    agent_cwd: Path,
+    environment: Mapping[str, str],
+    shared_environment: Mapping[str, str],
+) -> None:
+    venv_path = agent_cwd / ".venv"
+    if venv_path.exists():
+        shutil.rmtree(venv_path)
+
+    bootstrap_environment = dict(environment)
+    _seed_agent_python_install(agent_cwd, bootstrap_environment, shared_environment)
+
+    completed = subprocess.run(
+        ["uv", "sync", "--frozen"],
+        cwd=agent_cwd,
+        text=True,
+        capture_output=True,
+        env=bootstrap_environment,
+    )
+    if completed.returncode == 0:
+        return
+
+    stderr = completed.stderr.strip()
+    stdout = completed.stdout.strip()
+    details = stderr or stdout or "uv sync --frozen failed"
+    if stderr and stdout and stderr != stdout:
+        details = f"{stderr}\n{stdout}"
+    raise ExperimentOrchestratorError(
+        f"Agent environment bootstrap failed with exit code {completed.returncode}: {details}"
+    )
+
+
+def _seed_agent_python_install(
+    agent_cwd: Path,
+    bootstrap_environment: dict[str, str],
+    shared_environment: Mapping[str, str],
+) -> None:
+    local_install_root_value = bootstrap_environment.get("UV_PYTHON_INSTALL_DIR")
+    if not local_install_root_value:
+        return
+
+    local_install_root = Path(local_install_root_value)
+    local_install_root.mkdir(parents=True, exist_ok=True)
+
+    shared_uv_cache_dir_value = shared_environment.get("UV_CACHE_DIR")
+    if not shared_uv_cache_dir_value:
+        return
+
+    shared_cache_root = Path(shared_uv_cache_dir_value).parent
+    shared_python_root = shared_cache_root / "python"
+    shared_python_root.mkdir(parents=True, exist_ok=True)
+
+    global_python_root = _global_uv_python_root()
+    if global_python_root is not None:
+        for source_dir in _managed_python_dirs(global_python_root):
+            destination_dir = shared_python_root / source_dir.name
+            if destination_dir.exists():
+                continue
+            shutil.copytree(source_dir, destination_dir)
+
+    candidates = _managed_python_dirs(shared_python_root)
+    if not candidates:
+        return
+
+    selected_dir = candidates[-1]
+    local_destination = local_install_root / selected_dir.name
+    if not local_destination.exists():
+        shutil.copytree(selected_dir, local_destination)
+
+    bootstrap_environment["UV_PYTHON"] = _python_version_from_dir_name(selected_dir.name)
+
+
+def _global_uv_python_root() -> Path | None:
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+
+    candidate = Path(appdata) / "uv" / "python"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def _managed_python_dirs(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+
+    candidates: list[tuple[tuple[int, int, int], Path]] = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        version = _parse_managed_python_dir_version(child.name)
+        if version is None:
+            continue
+        candidates.append((version, child))
+
+    candidates.sort(key=lambda item: item[0])
+    return [path for _, path in candidates]
+
+
+def _parse_managed_python_dir_version(name: str) -> tuple[int, int, int] | None:
+    match = re.fullmatch(r"cpython-(\d+)\.(\d+)\.(\d+)-.+", name)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _python_version_from_dir_name(name: str) -> str:
+    version = _parse_managed_python_dir_version(name)
+    if version is None:
+        raise ExperimentOrchestratorError(f"Unexpected managed Python directory name: {name}")
+    major, minor, patch = version
+    return f"{major}.{minor}.{patch}"
