@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 
 from src.Agents.Codex import CodexSessionRunner
 from src.Agents.Codex.SessionLog import CodexSessionLog
-from src.EditPolicy import EditPolicy
 
-from .ExperimentBootstrap import bootstrap_artifacts as generate_bootstrap_artifacts
 from .EvaluationRunner import EvaluationRunner
 from .ExperimentLedger import ExperimentLedger
 from .ExperimentIterationRunner import run_iteration, score_reference
 from .ExperimentRunSupport import build_shared_target_environment
 from .ExperimentVisualization import progress_chart_path, write_experiment_progress_svg
 from .GitWorkspace import GitWorkspaceManager
-from .Models import BootstrapArtifacts, ExperimentIterationResult, ExperimentOrchestratorError, ExperimentRunConfig
+from .Models import ExperimentIterationResult, ExperimentOrchestratorError, ExperimentRunConfig
 
 
 @dataclass(frozen=True)
@@ -60,60 +58,24 @@ class ExperimentOrchestrator:
     def ledger_path(self) -> Path:
         return self._ledger.ledger_path
 
-    def bootstrap_artifacts(
-        self,
-        target_repo_path: str | Path,
-        objective_name: str,
-        evaluation_command: str,
-        evaluation_file_path: str | Path | None = None,
-        baseline_branch: str | None = None,
-    ) -> BootstrapArtifacts:
-        context = self._resolve_repo_context(target_repo_path)
-        objective_slug = self._slugify(objective_name)
-        target_environment = build_shared_target_environment(self._cache_root)
-        workspace = GitWorkspaceManager(context.repo_root, self._worktrees_root)
-        workspace.ensure_clean_repo()
-        bootstrap_ref = self._resolve_start_ref(workspace, objective_slug, baseline_branch)
-        bootstrap_id = f"bootstrap-{self._timestamp_token()}"
-        return generate_bootstrap_artifacts(
-            target_path=context.target_path,
-            target_relative_path=context.target_relative_path,
-            objective_slug=objective_slug,
-            evaluation_command=evaluation_command,
-            evaluation_file_path=evaluation_file_path,
-            bootstrap_id=bootstrap_id,
-            bootstrap_ref=bootstrap_ref,
-            workspace=workspace,
-            worktrees_root=self._worktrees_root,
-            codex_session_runner=self._codex_session_runner,
-            environment=target_environment,
-        )
-
     def run_iterations(self, config: ExperimentRunConfig) -> list[ExperimentIterationResult]:
         if config.iteration_count < 1:
             raise ValueError("iteration_count must be at least 1.")
 
         context = self._resolve_repo_context(config.target_repo_path)
-        self._validate_config_path_rules(context.repo_root, config)
         objective_slug = self._slugify(config.objective_name)
         target_environment = build_shared_target_environment(self._cache_root)
+        hidden_eval_cwd = self._resolve_hidden_eval_cwd(config.hidden_eval_cwd)
         workspace = GitWorkspaceManager(context.repo_root, self._worktrees_root)
         workspace.ensure_clean_repo()
         best_branch_name = f"best/{objective_slug}"
-        bootstrap_artifacts = self.bootstrap_artifacts(
-            target_repo_path=config.target_repo_path,
-            objective_name=config.objective_name,
-            evaluation_command=config.evaluation_command,
-            evaluation_file_path=config.evaluation_file_path,
-            baseline_branch=config.baseline_branch,
-        )
-
         start_ref = self._resolve_start_ref(workspace, objective_slug, config.baseline_branch)
         best_score = score_reference(
+            hidden_eval_cwd=hidden_eval_cwd,
+            hidden_eval_command=config.hidden_eval_command,
             target_relative_path=context.target_relative_path,
             objective_slug=objective_slug,
             ref=start_ref,
-            evaluation_command=config.evaluation_command,
             score_id=f"score-{self._timestamp_token()}",
             workspace=workspace,
             worktrees_root=self._worktrees_root,
@@ -132,7 +94,7 @@ class ExperimentOrchestrator:
                 workspace=workspace,
                 worktrees_root=self._worktrees_root,
                 target_environment=target_environment,
-                bootstrap_artifacts=bootstrap_artifacts,
+                hidden_eval_cwd=hidden_eval_cwd,
                 best_branch_name=best_branch_name,
                 start_ref=start_ref,
                 best_score=best_score,
@@ -145,7 +107,7 @@ class ExperimentOrchestrator:
                 best_score = result.score
             results.append(result)
 
-        ledger_entries = self._ledger.load_entries(config.objective_name)
+        ledger_entries = self._ledger.load_entries(config.objective_name, config.evaluation_key)
         write_experiment_progress_svg(
             entries=ledger_entries,
             objective_name=config.objective_name,
@@ -155,8 +117,12 @@ class ExperimentOrchestrator:
         )
         return results
 
-    def load_ledger_entries(self, objective_name: str | None = None) -> list[dict[str, object]]:
-        return self._ledger.load_entries(objective_name)
+    def load_ledger_entries(
+        self,
+        objective_name: str | None = None,
+        evaluation_key: str | None = None,
+    ) -> list[dict[str, object]]:
+        return self._ledger.load_entries(objective_name, evaluation_key)
 
     def _resolve_repo_context(self, target_repo_path: str | Path) -> _RepoContext:
         target_path = Path(target_repo_path).expanduser().resolve()
@@ -193,18 +159,13 @@ class ExperimentOrchestrator:
             return current_branch
         return workspace.rev_parse("HEAD")
 
-    def _validate_config_path_rules(self, repo_root: Path, config: ExperimentRunConfig) -> None:
-        errors = EditPolicy.validate_config_paths(
-            repo_root=repo_root,
-            editable_paths=config.editable_paths,
-            non_editable_paths=config.non_editable_paths,
-            non_readable_paths=config.non_readable_paths,
-        )
-        if not errors:
-            return
-
-        formatted_errors = "\n".join(f"- {error}" for error in errors)
-        raise ValueError(f"Invalid edit policy paths in config:\n{formatted_errors}")
+    def _resolve_hidden_eval_cwd(self, hidden_eval_cwd: str | Path) -> Path:
+        candidate = Path(hidden_eval_cwd).expanduser().resolve()
+        if not candidate.exists():
+            raise ValueError(f"hidden_eval_cwd does not exist: {hidden_eval_cwd}")
+        if not candidate.is_dir():
+            raise ValueError(f"hidden_eval_cwd is not a directory: {hidden_eval_cwd}")
+        return candidate
 
     def _slugify(self, value: str) -> str:
         slug = re.sub(r"[^A-Za-z0-9._/-]+", "-", value.strip().lower()).strip("-./")

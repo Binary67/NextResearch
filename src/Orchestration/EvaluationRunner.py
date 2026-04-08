@@ -8,11 +8,26 @@ from typing import Mapping
 from .Models import ExperimentOrchestratorError
 
 
+NEXTRESEARCH_CANDIDATE_TARGET_PATH = "NEXTRESEARCH_CANDIDATE_TARGET_PATH"
+NEXTRESEARCH_CANDIDATE_REPO_ROOT = "NEXTRESEARCH_CANDIDATE_REPO_ROOT"
+
+
 @dataclass(frozen=True)
 class EvaluationOutcome:
     score: float
     stdout: str
     stderr: str
+
+
+def build_candidate_environment(
+    environment: Mapping[str, str] | None,
+    candidate_target_path: Path,
+    candidate_repo_root: Path,
+) -> dict[str, str]:
+    candidate_environment = dict(environment) if environment is not None else {}
+    candidate_environment[NEXTRESEARCH_CANDIDATE_TARGET_PATH] = str(candidate_target_path.resolve())
+    candidate_environment[NEXTRESEARCH_CANDIDATE_REPO_ROOT] = str(candidate_repo_root.resolve())
+    return candidate_environment
 
 
 class EvaluationRunner:

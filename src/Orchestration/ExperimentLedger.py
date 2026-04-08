@@ -21,9 +21,8 @@ class ExperimentLedger:
         result: ExperimentIterationResult,
         target_repo_path: Path,
         worktree_path: Path,
-        evaluation_command: str,
+        evaluation_key: str,
         optimization_direction: str,
-        docs_dir: Path,
     ) -> None:
         notes = self._build_notes(result)
         entry = {
@@ -39,11 +38,9 @@ class ExperimentLedger:
             "worktree_path": str(worktree_path.resolve()),
             "base_commit": result.base_commit,
             "result_commit": result.result_commit,
-            "evaluation_command": evaluation_command,
+            "evaluation_key": evaluation_key,
             "optimization_direction": optimization_direction,
             "session_log_path": str(result.session_log_path) if result.session_log_path else None,
-            "running_instructions_path": str(docs_dir / "RUNNING_INSTRUCTIONS.md"),
-            "evaluation_spec_path": str(docs_dir / "EVALUATION_SPEC.md"),
             "response_text": result.response_text,
             "strategy": result.strategy,
             "why_it_should_help": result.why_it_should_help,
@@ -56,7 +53,11 @@ class ExperimentLedger:
         with self._ledger_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    def load_entries(self, objective_name: str | None = None) -> list[dict[str, object]]:
+    def load_entries(
+        self,
+        objective_name: str | None = None,
+        evaluation_key: str | None = None,
+    ) -> list[dict[str, object]]:
         if not self._ledger_path.exists():
             return []
 
@@ -68,6 +69,8 @@ class ExperimentLedger:
                     continue
                 entry = json.loads(normalized)
                 if objective_name and entry.get("objective_name") != objective_name:
+                    continue
+                if evaluation_key and entry.get("evaluation_key") != evaluation_key:
                     continue
                 entries.append(entry)
         return entries

@@ -123,62 +123,15 @@ def build_edit_policy(
     worktree_path: Path,
     session_cwd: Path,
     target_relative_path: Path,
-    editable_paths: tuple[str, ...],
-    non_editable_paths: tuple[str, ...],
-    non_readable_paths: tuple[str, ...],
 ) -> EditPolicy:
-    effective_non_editable_paths = tuple(
-        dict.fromkeys((*non_editable_paths, *orchestrator_managed_paths(target_relative_path)))
-    )
+    target_scope = target_relative_path.as_posix().strip("/")
+    editable_paths = () if not target_scope or target_scope == "." else (_directory_path(target_scope),)
     return EditPolicy.from_paths(
         worktree_path,
         session_cwd=session_cwd,
         editable_paths=editable_paths,
-        non_editable_paths=effective_non_editable_paths,
-        non_readable_paths=non_readable_paths,
+        non_editable_paths=orchestrator_managed_paths(target_relative_path),
     )
-
-
-def build_agent_sparse_patterns(
-    workspace: GitWorkspaceManager,
-    orchestrator_worktree_path: Path,
-    edit_policy: EditPolicy,
-    target_relative_path: Path,
-) -> list[str]:
-    patterns = [
-        path
-        for path in workspace.list_tracked_paths(orchestrator_worktree_path)
-        if edit_policy.evaluate_read_path(orchestrator_worktree_path / path).allowed
-    ]
-    for managed_path in orchestrator_managed_paths(target_relative_path):
-        if managed_path not in patterns:
-            patterns.append(managed_path)
-    return patterns
-
-
-def blocked_commands_for_run(evaluation_command: str, non_readable_paths: tuple[str, ...]) -> tuple[str, ...]:
-    blocked_commands: list[str] = [evaluation_command]
-    for path in non_readable_paths:
-        stripped = path.strip()
-        if not stripped:
-            continue
-        blocked_commands.append(stripped)
-        name = Path(stripped).name
-        if name and name != stripped:
-            blocked_commands.append(name)
-    return tuple(dict.fromkeys(blocked_commands))
-
-
-def build_effective_non_readable_paths(
-    target_relative_path: Path,
-    evaluation_relative_path: Path,
-    non_readable_paths: tuple[str, ...],
-) -> tuple[str, ...]:
-    hidden_paths = list(non_readable_paths)
-    evaluation_repo_relative_path = _target_scoped_path(target_relative_path, evaluation_relative_path)
-    if evaluation_repo_relative_path not in hidden_paths:
-        hidden_paths.append(evaluation_repo_relative_path)
-    return tuple(hidden_paths)
 
 
 def docs_excluded_patch_paths(target_relative_path: Path) -> tuple[str, ...]:

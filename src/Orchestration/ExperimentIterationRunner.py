@@ -18,8 +18,7 @@ from src.Agents.Codex import (
 from src.Agents.Codex.SessionLog import CodexSessionLog
 from src.EditPolicy import EditPolicy
 
-from .EvaluationRunner import EvaluationRunner
-from .ExperimentBootstrap import resolve_evaluation_file_path
+from .EvaluationRunner import EvaluationRunner, build_candidate_environment
 from .ExperimentEvalTool import ORCHESTRATOR_RUN_EVAL_TOOL, ExperimentEvalTool
 from .ExperimentLedger import ExperimentLedger
 from .ExperimentPrompts import build_experiment_prompt
@@ -27,9 +26,6 @@ from .ExperimentRunDocs import build_run_docs
 from .ExperimentRunSupport import (
     append_post_run_review,
     build_agent_target_environment,
-    blocked_commands_for_run,
-    build_effective_non_readable_paths,
-    build_agent_sparse_patterns,
     build_edit_policy,
     cleanup_experiment_workspaces,
     docs_excluded_patch_paths,
@@ -38,15 +34,16 @@ from .ExperimentRunSupport import (
     write_run_docs,
 )
 from .GitWorkspace import GitWorkspaceManager
-from .Models import BootstrapArtifacts, ExperimentIterationResult, ExperimentOrchestratorError, ExperimentRunConfig
+from .Models import ExperimentIterationResult, ExperimentOrchestratorError, ExperimentRunConfig
 
 
 def score_reference(
     *,
+    hidden_eval_cwd: Path,
+    hidden_eval_command: str,
     target_relative_path: Path,
     objective_slug: str,
     ref: str,
-    evaluation_command: str,
     score_id: str,
     workspace: GitWorkspaceManager,
     worktrees_root: Path,
@@ -55,9 +52,14 @@ def score_reference(
 ) -> float:
     worktree_path = worktrees_root / objective_slug / score_id
     workspace.create_detached_worktree(worktree_path, ref)
-    target_cwd = worktree_path / target_relative_path
     try:
-        return evaluation_runner.run(target_cwd, evaluation_command, environment=environment).score
+        candidate_target_path = worktree_path / target_relative_path
+        eval_environment = build_candidate_environment(
+            environment,
+            candidate_target_path=candidate_target_path,
+            candidate_repo_root=worktree_path,
+        )
+        return evaluation_runner.run(hidden_eval_cwd, hidden_eval_command, environment=eval_environment).score
     finally:
         workspace.remove_worktree(worktree_path)
 
@@ -72,7 +74,7 @@ def run_iteration(
     workspace: GitWorkspaceManager,
     worktrees_root: Path,
     target_environment: Mapping[str, str],
-    bootstrap_artifacts: BootstrapArtifacts,
+    hidden_eval_cwd: Path,
     best_branch_name: str,
     start_ref: str,
     best_score: float,
@@ -83,22 +85,10 @@ def run_iteration(
 ) -> ExperimentIterationResult:
     current_base_ref = best_branch_name if workspace.branch_exists(best_branch_name) else start_ref
     current_base_commit = workspace.rev_parse(current_base_ref)
-    evaluation_file = resolve_evaluation_file_path(
-        target_path,
-        config.evaluation_command,
-        config.evaluation_file_path,
-    )
-    evaluation_relative_path = evaluation_file.relative_to(target_path)
-    effective_non_readable_paths = build_effective_non_readable_paths(
-        target_relative_path,
-        evaluation_relative_path,
-        config.non_readable_paths,
-    )
     branch_name = f"exp/{objective_slug}/{run_id}"
     run_root = worktrees_root / objective_slug / run_id
     orchestrator_worktree_path = run_root / "orchestrator"
     agent_worktree_path = run_root / "agent"
-    orchestrator_cwd = orchestrator_worktree_path / target_relative_path
     agent_cwd = agent_worktree_path / target_relative_path
     docs_dir = agent_cwd / ".nextresearch"
     score: float | None = None
@@ -120,24 +110,9 @@ def run_iteration(
 
     try:
         workspace.create_experiment_worktree(branch_name, orchestrator_worktree_path, current_base_commit)
-        orchestrator_edit_policy = build_edit_policy(
-            orchestrator_worktree_path,
-            orchestrator_cwd,
-            target_relative_path,
-            config.editable_paths,
-            config.non_editable_paths,
-            effective_non_readable_paths,
-        )
-        sparse_patterns = build_agent_sparse_patterns(
-            workspace,
-            orchestrator_worktree_path,
-            orchestrator_edit_policy,
-            target_relative_path,
-        )
-        workspace.create_sparse_detached_worktree(
+        workspace.create_detached_worktree(
             agent_worktree_path,
             current_base_commit,
-            sparse_patterns,
         )
         agent_cwd.mkdir(parents=True, exist_ok=True)
         agent_environment = build_agent_target_environment(agent_cwd)
@@ -147,7 +122,6 @@ def run_iteration(
             build_run_docs(
                 config=config,
                 target_repo_path=target_path,
-                bootstrap_artifacts=bootstrap_artifacts,
                 current_base_ref=current_base_ref,
                 current_base_commit=current_base_commit,
                 best_branch_name=best_branch_name,
@@ -159,9 +133,6 @@ def run_iteration(
             agent_worktree_path,
             agent_cwd,
             target_relative_path,
-            config.editable_paths,
-            config.non_editable_paths,
-            effective_non_readable_paths,
         )
         print_edit_policy(agent_edit_policy)
         eval_tool = ExperimentEvalTool(
@@ -170,7 +141,8 @@ def run_iteration(
             orchestrator_worktree_path=orchestrator_worktree_path,
             target_relative_path=target_relative_path,
             current_base_commit=current_base_commit,
-            evaluation_command=config.evaluation_command,
+            hidden_eval_cwd=hidden_eval_cwd,
+            hidden_eval_command=config.hidden_eval_command,
             optimization_direction=config.optimization_direction,
             best_score=best_score,
             start_score=best_score,
@@ -184,7 +156,6 @@ def run_iteration(
             _build_experiment_instruction(config.objective_name, config.agent_eval_budget, agent_edit_policy),
             edit_policy=agent_edit_policy,
             environment=agent_environment,
-            blocked_commands=blocked_commands_for_run(config.evaluation_command, effective_non_readable_paths),
             dynamic_tools=(_build_eval_dynamic_tool(eval_tool),),
         )
         response_text = session_result.turn_result.response_text
@@ -293,9 +264,8 @@ def run_iteration(
             result=result,
             target_repo_path=target_path,
             worktree_path=orchestrator_worktree_path,
-            evaluation_command=config.evaluation_command,
+            evaluation_key=config.evaluation_key,
             optimization_direction=config.optimization_direction,
-            docs_dir=docs_dir,
         )
     finally:
         cleanup_experiment_workspaces(

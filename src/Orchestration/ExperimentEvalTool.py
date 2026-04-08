@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from .EvaluationRunner import EvaluationOutcome, EvaluationRunner
+from .EvaluationRunner import EvaluationOutcome, EvaluationRunner, build_candidate_environment
 from .GitWorkspace import GitWorkspaceManager
 from .Models import ExperimentOrchestratorError
 
@@ -86,7 +86,8 @@ class ExperimentEvalTool:
         orchestrator_worktree_path: Path,
         target_relative_path: Path,
         current_base_commit: str,
-        evaluation_command: str,
+        hidden_eval_cwd: Path,
+        hidden_eval_command: str,
         optimization_direction: str,
         best_score: float,
         start_score: float,
@@ -100,7 +101,8 @@ class ExperimentEvalTool:
         self._orchestrator_worktree_path = orchestrator_worktree_path
         self._target_relative_path = target_relative_path
         self._current_base_commit = current_base_commit
-        self._evaluation_command = evaluation_command
+        self._hidden_eval_cwd = hidden_eval_cwd
+        self._hidden_eval_command = hidden_eval_command
         self._optimization_direction = optimization_direction
         self._best_score = best_score
         self._start_score = start_score
@@ -269,10 +271,16 @@ class ExperimentEvalTool:
         )
 
     def _run_evaluation(self) -> EvaluationOutcome:
+        candidate_target_path = self._orchestrator_worktree_path / self._target_relative_path
+        environment = build_candidate_environment(
+            self._environment,
+            candidate_target_path=candidate_target_path,
+            candidate_repo_root=self._orchestrator_worktree_path,
+        )
         return self._evaluation_runner.run(
-            self._orchestrator_worktree_path / self._target_relative_path,
-            self._evaluation_command,
-            environment=self._environment,
+            self._hidden_eval_cwd,
+            self._hidden_eval_command,
+            environment=environment,
         )
 
     def _retain_candidate_if_best(

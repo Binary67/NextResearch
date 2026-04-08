@@ -18,9 +18,9 @@ Update it when adding, removing, renaming, or moving core modules.
 
 ### Core Orchestration
 - `src/Orchestration/ExperimentOrchestrator.py`
-  - Top-level coordinator for bootstrap, iteration execution, scoring, ledger logging, and best-branch promotion.
+  - Top-level coordinator for iteration execution, hidden-eval scoring, ledger logging, and best-branch promotion.
 - `src/Orchestration/ExperimentIterationRunner.py`
-  - Single-iteration flow: create worktrees, run Codex, apply patch, evaluate, log result, and clean up.
+  - Single-iteration flow: create worktrees, run Codex, apply patch, call hidden eval, log result, and clean up.
 - `src/Orchestration/Models.py`
   - Shared dataclasses and core types, including `ExperimentRunConfig` and iteration results.
 - `src/Orchestration/RunConfigFile.py`
@@ -39,12 +39,10 @@ Update it when adding, removing, renaming, or moving core modules.
   - Prompt source text used by the orchestrator.
 - `src/Orchestration/ExperimentPrompts.py`
   - Builds the experiment prompt sent to Codex.
-- `src/Orchestration/ExperimentBootstrap.py`
-  - Generates bootstrap artifacts like `RUNNING_INSTRUCTIONS.md` and `EVALUATION_SPEC.md`.
 - `src/Orchestration/ExperimentRunDocs.py`
-  - Builds per-run docs such as baseline and history context.
+  - Builds per-run docs such as baseline and experiment history context.
 - `src/Orchestration/ExperimentRunSupport.py`
-  - Helper logic for edit policy, sparse checkout patterns, cleanup, and post-run review.
+  - Helper logic for edit policy, runtime-managed docs, cleanup, and post-run review.
 
 ### Codex Integration
 - `src/Agents/Codex/Agent.py`

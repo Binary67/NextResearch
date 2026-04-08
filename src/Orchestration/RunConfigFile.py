@@ -10,17 +10,14 @@ CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.toml"
 STARTER_CONFIG = """# Fill in the required values below, then rerun: uv run Main.py
 target_repo_path = "D:/path/to/target-repo"
 objective_name = "maximize-evaluation-score"
-evaluation_command = "uv run evaluation.py"
 iteration_count = 3
 optimization_direction = "minimize"
+hidden_eval_cwd = "D:/path/to/hidden-eval"
+hidden_eval_command = "uv run hidden_eval.py"
 agent_eval_budget = 3
 
 # Optional examples:
-# evaluation_file_path = "evaluation.py"
 # baseline_branch = "main"
-# editable_paths = ["feature_engineering.py"]
-# non_editable_paths = ["train.py"]
-# non_readable_paths = ["evaluation.py", "data_processing.py"]
 """
 
 
@@ -43,9 +40,10 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
     required_keys = (
         "target_repo_path",
         "objective_name",
-        "evaluation_command",
         "iteration_count",
         "optimization_direction",
+        "hidden_eval_cwd",
+        "hidden_eval_command",
     )
     missing_keys = [key for key in required_keys if key not in raw_config]
     if missing_keys:
@@ -53,7 +51,13 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
         raise SystemExit(f"Missing required config field(s) in {config_path}: {missing_list}")
 
     errors: list[str] = []
-    for key in ("target_repo_path", "objective_name", "evaluation_command", "optimization_direction"):
+    for key in (
+        "target_repo_path",
+        "objective_name",
+        "optimization_direction",
+        "hidden_eval_cwd",
+        "hidden_eval_command",
+    ):
         value = raw_config[key]
         if not isinstance(value, str) or not value.strip():
             errors.append(f"{key} must be a non-empty string.")
@@ -68,25 +72,29 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
     elif agent_eval_budget < 1:
         errors.append("agent_eval_budget must be at least 1.")
 
-    for key in ("evaluation_file_path", "baseline_branch"):
+    for key in ("baseline_branch",):
         if key in raw_config:
             value = raw_config[key]
             if not isinstance(value, str) or not value.strip():
                 errors.append(f"{key} must be a non-empty string when provided.")
 
-    for key in ("editable_paths", "non_editable_paths", "non_readable_paths"):
-        if key not in raw_config:
-            continue
-        value = raw_config[key]
-        if isinstance(value, str):
-            if not value.strip():
-                errors.append(f"{key} must not be empty.")
-            continue
-        if not isinstance(value, list):
-            errors.append(f"{key} must be a string or an array of strings.")
-            continue
-        if any(not isinstance(item, str) or not item.strip() for item in value):
-            errors.append(f"{key} entries must all be non-empty strings.")
+    removed_keys = (
+        "evaluation_command",
+        "evaluation_file_path",
+        "editable_paths",
+        "non_editable_paths",
+        "non_readable_paths",
+    )
+    present_removed_keys = [key for key in removed_keys if key in raw_config]
+    if present_removed_keys:
+        errors.append(
+            "Removed config field(s) are no longer supported: " + ", ".join(present_removed_keys) + "."
+        )
+
+    allowed_keys = set(required_keys) | {"agent_eval_budget", "baseline_branch"}
+    unexpected_keys = sorted(key for key in raw_config if key not in allowed_keys and key not in removed_keys)
+    if unexpected_keys:
+        errors.append("Unsupported config field(s): " + ", ".join(unexpected_keys) + ".")
 
     if errors:
         formatted_errors = "\n".join(f"- {error}" for error in errors)
@@ -95,13 +103,10 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
     return ExperimentRunConfig(
         target_repo_path=raw_config["target_repo_path"],
         objective_name=raw_config["objective_name"],
-        evaluation_command=raw_config["evaluation_command"],
         iteration_count=iteration_count,
         optimization_direction=raw_config["optimization_direction"],
+        hidden_eval_cwd=raw_config["hidden_eval_cwd"],
+        hidden_eval_command=raw_config["hidden_eval_command"],
         agent_eval_budget=agent_eval_budget,
-        evaluation_file_path=raw_config.get("evaluation_file_path"),
         baseline_branch=raw_config.get("baseline_branch"),
-        editable_paths=raw_config.get("editable_paths", ()),
-        non_editable_paths=raw_config.get("non_editable_paths", ()),
-        non_readable_paths=raw_config.get("non_readable_paths", ()),
     )
