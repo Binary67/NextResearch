@@ -95,6 +95,18 @@ class GitWorkspaceManager:
             args.extend(f":(exclude){path}" for path in exclude_paths if path)
         return self.git_output_bytes(worktree_path, *args)
 
+    def diff_refs(
+        self,
+        base_ref: str,
+        target_ref: str,
+        exclude_paths: tuple[str, ...] = (),
+    ) -> bytes:
+        args = ["diff", "--binary", base_ref, target_ref]
+        if exclude_paths:
+            args.extend(["--", "."])
+            args.extend(f":(exclude){path}" for path in exclude_paths if path)
+        return self.git_output_bytes(self._repo_root, *args)
+
     def apply_patch(self, worktree_path: Path, patch: bytes) -> None:
         if not patch.strip():
             return

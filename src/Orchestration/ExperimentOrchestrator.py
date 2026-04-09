@@ -75,6 +75,7 @@ class ExperimentOrchestrator:
             hidden_eval_command=config.hidden_eval_command,
             target_relative_path=context.target_relative_path,
             objective_slug=objective_slug,
+            evaluation_base_ref=start_ref,
             ref=start_ref,
             score_id=f"score-{self._timestamp_token()}",
             workspace=workspace,

@@ -34,6 +34,7 @@ from .ExperimentRunSupport import (
     write_run_docs,
 )
 from .GitWorkspace import GitWorkspaceManager
+from .HiddenEvalSandbox import prepare_hidden_eval_sandbox
 from .Models import ExperimentIterationResult, ExperimentOrchestratorError, ExperimentRunConfig
 
 
@@ -43,6 +44,7 @@ def score_reference(
     hidden_eval_command: str,
     target_relative_path: Path,
     objective_slug: str,
+    evaluation_base_ref: str,
     ref: str,
     score_id: str,
     workspace: GitWorkspaceManager,
@@ -50,18 +52,27 @@ def score_reference(
     evaluation_runner: EvaluationRunner,
     environment: Mapping[str, str],
 ) -> float:
-    worktree_path = worktrees_root / objective_slug / score_id
-    workspace.create_detached_worktree(worktree_path, ref)
+    sandbox_path = worktrees_root / objective_slug / score_id / "hidden-eval"
     try:
-        candidate_target_path = worktree_path / target_relative_path
+        reference_patch = b""
+        if workspace.rev_parse(ref) != workspace.rev_parse(evaluation_base_ref):
+            reference_patch = workspace.diff_refs(evaluation_base_ref, ref)
+        prepare_hidden_eval_sandbox(
+            source_path=hidden_eval_cwd,
+            sandbox_path=sandbox_path,
+            workspace=workspace,
+            patch=reference_patch,
+        )
+        candidate_target_path = sandbox_path / target_relative_path
         eval_environment = build_candidate_environment(
             environment,
             candidate_target_path=candidate_target_path,
-            candidate_repo_root=worktree_path,
+            candidate_repo_root=sandbox_path,
         )
-        return evaluation_runner.run(hidden_eval_cwd, hidden_eval_command, environment=eval_environment).score
+        return evaluation_runner.run(sandbox_path, hidden_eval_command, environment=eval_environment).score
     finally:
-        workspace.remove_worktree(worktree_path)
+        if sandbox_path.exists():
+            shutil.rmtree(sandbox_path)
 
 
 def run_iteration(
@@ -89,6 +100,7 @@ def run_iteration(
     run_root = worktrees_root / objective_slug / run_id
     orchestrator_worktree_path = run_root / "orchestrator"
     agent_worktree_path = run_root / "agent"
+    hidden_eval_sandbox_path = run_root / "hidden-eval"
     agent_cwd = agent_worktree_path / target_relative_path
     docs_dir = agent_cwd / ".nextresearch"
     score: float | None = None
@@ -140,8 +152,10 @@ def run_iteration(
             agent_worktree_path=agent_worktree_path,
             orchestrator_worktree_path=orchestrator_worktree_path,
             target_relative_path=target_relative_path,
+            evaluation_base_ref=start_ref,
             current_base_commit=current_base_commit,
             hidden_eval_cwd=hidden_eval_cwd,
+            hidden_eval_sandbox_path=hidden_eval_sandbox_path,
             hidden_eval_command=config.hidden_eval_command,
             optimization_direction=config.optimization_direction,
             best_score=best_score,
@@ -274,6 +288,7 @@ def run_iteration(
             agent_worktree_path,
             branch_name,
             preserve_branch=preserve_branch,
+            extra_paths=(hidden_eval_sandbox_path,),
         )
     return result
 

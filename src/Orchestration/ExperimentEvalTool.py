@@ -8,6 +8,7 @@ from typing import Mapping
 
 from .EvaluationRunner import EvaluationOutcome, EvaluationRunner, build_candidate_environment
 from .GitWorkspace import GitWorkspaceManager
+from .HiddenEvalSandbox import prepare_hidden_eval_sandbox
 from .Models import ExperimentOrchestratorError
 
 
@@ -41,11 +42,13 @@ class ToolEvaluationResponse:
 @dataclass(frozen=True)
 class CandidateSnapshot:
     fingerprint: str
-    patch: bytes
+    orchestrator_patch: bytes
+    evaluation_patch: bytes
+    has_agent_changes: bool
 
     @property
     def is_modified(self) -> bool:
-        return bool(self.patch)
+        return self.has_agent_changes
 
 
 @dataclass(frozen=True)
@@ -85,8 +88,10 @@ class ExperimentEvalTool:
         agent_worktree_path: Path,
         orchestrator_worktree_path: Path,
         target_relative_path: Path,
+        evaluation_base_ref: str,
         current_base_commit: str,
         hidden_eval_cwd: Path,
+        hidden_eval_sandbox_path: Path,
         hidden_eval_command: str,
         optimization_direction: str,
         best_score: float,
@@ -100,8 +105,11 @@ class ExperimentEvalTool:
         self._agent_worktree_path = agent_worktree_path
         self._orchestrator_worktree_path = orchestrator_worktree_path
         self._target_relative_path = target_relative_path
+        self._evaluation_base_ref = evaluation_base_ref
+        self._evaluation_base_commit = workspace.rev_parse(evaluation_base_ref)
         self._current_base_commit = current_base_commit
         self._hidden_eval_cwd = hidden_eval_cwd
+        self._hidden_eval_sandbox_path = hidden_eval_sandbox_path
         self._hidden_eval_command = hidden_eval_command
         self._optimization_direction = optimization_direction
         self._best_score = best_score
@@ -110,9 +118,12 @@ class ExperimentEvalTool:
         self._environment = dict(environment)
         self._budget_remaining = budget
         self._excluded_patch_paths = tuple(path for path in excluded_patch_paths if path)
+        self._current_base_patch = self._build_current_base_patch()
         self._baseline_snapshot = CandidateSnapshot(
-            fingerprint=hashlib.sha256(b"").hexdigest(),
-            patch=b"",
+            fingerprint=hashlib.sha256(self._current_base_patch).hexdigest(),
+            orchestrator_patch=b"",
+            evaluation_patch=self._current_base_patch,
+            has_agent_changes=False,
         )
         self._last_synced_fingerprint: str | None = None
         self._last_evaluation: CachedEvaluationResult | None = None
@@ -136,46 +147,33 @@ class ExperimentEvalTool:
         snapshot = self.sync_current_candidate()
         self._budget_remaining -= 1
 
-        try:
-            outcome = self._run_evaluation()
-        except ExperimentOrchestratorError as exc:
-            self._last_evaluation = CachedEvaluationResult(
-                fingerprint=snapshot.fingerprint,
-                score=None,
-                stdout="",
-                stderr=str(exc),
-                failure_message=str(exc),
-            )
+        evaluation = self._evaluate_snapshot(snapshot)
+        self._last_evaluation = evaluation
+        if evaluation.failure_message is not None:
             return ToolEvaluationResponse(
                 status="evaluation_failed",
                 score=None,
                 delta_vs_best=None,
                 delta_vs_start=None,
                 budget_remaining=self._budget_remaining,
-                note=self._sanitize_failure_message(str(exc)),
+                note=self._sanitize_failure_message(evaluation.failure_message),
             )
 
-        self._last_evaluation = CachedEvaluationResult(
-            fingerprint=snapshot.fingerprint,
-            score=outcome.score,
-            stdout=outcome.stdout,
-            stderr=outcome.stderr,
-        )
         self._retain_candidate_if_best(
             snapshot=snapshot,
-            score=outcome.score,
-            stdout=outcome.stdout,
-            stderr=outcome.stderr,
+            score=evaluation.score,
+            stdout=evaluation.stdout,
+            stderr=evaluation.stderr,
         )
-        delta_vs_best = self._score_delta(outcome.score, self._best_score)
-        delta_vs_start = self._score_delta(outcome.score, self._start_score)
+        delta_vs_best = self._score_delta(evaluation.score, self._best_score)
+        delta_vs_start = self._score_delta(evaluation.score, self._start_score)
         return ToolEvaluationResponse(
             status="completed",
-            score=outcome.score,
+            score=evaluation.score,
             delta_vs_best=delta_vs_best,
             delta_vs_start=delta_vs_start,
             budget_remaining=self._budget_remaining,
-            note=self._success_note(outcome.score),
+            note=self._success_note(evaluation.score),
         )
 
     def sync_current_candidate(self) -> CandidateSnapshot:
@@ -184,6 +182,17 @@ class ExperimentEvalTool:
         return snapshot
 
     def finalize_candidate(self) -> FinalCandidateEvaluation:
+        current_snapshot = self.sync_current_candidate()
+        current_evaluation, reused_current_result = self._evaluate_if_needed(current_snapshot)
+        self._last_evaluation = current_evaluation
+        if current_evaluation.failure_message is None:
+            self._retain_candidate_if_best(
+                snapshot=current_snapshot,
+                score=current_evaluation.score,
+                stdout=current_evaluation.stdout,
+                stderr=current_evaluation.stderr,
+            )
+
         retained_candidate = self._best_modified_candidate
         if retained_candidate is not None:
             self._sync_snapshot(retained_candidate.snapshot)
@@ -193,57 +202,34 @@ class ExperimentEvalTool:
                 stdout=retained_candidate.stdout,
                 stderr=retained_candidate.stderr,
                 failure_message=None,
-                reused_cached_result=True,
+                reused_cached_result=reused_current_result
+                and retained_candidate.snapshot.fingerprint == current_snapshot.fingerprint,
                 retained_modified_candidate=True,
             )
 
-        snapshot = self._baseline_snapshot
-        self._sync_snapshot(snapshot)
-        if self._last_evaluation is not None and self._last_evaluation.fingerprint == snapshot.fingerprint:
+        if current_evaluation.failure_message is None:
+            self._sync_snapshot(current_snapshot)
             return FinalCandidateEvaluation(
-                fingerprint=snapshot.fingerprint,
-                score=self._last_evaluation.score,
-                stdout=self._last_evaluation.stdout,
-                stderr=self._last_evaluation.stderr,
-                failure_message=self._last_evaluation.failure_message,
-                reused_cached_result=True,
+                fingerprint=current_snapshot.fingerprint,
+                score=current_evaluation.score,
+                stdout=current_evaluation.stdout,
+                stderr=current_evaluation.stderr,
+                failure_message=None,
+                reused_cached_result=reused_current_result,
                 retained_modified_candidate=False,
             )
 
-        try:
-            outcome = self._run_evaluation()
-        except ExperimentOrchestratorError as exc:
-            failure_message = str(exc)
-            self._last_evaluation = CachedEvaluationResult(
-                fingerprint=snapshot.fingerprint,
-                score=None,
-                stdout="",
-                stderr=failure_message,
-                failure_message=failure_message,
-            )
-            return FinalCandidateEvaluation(
-                fingerprint=snapshot.fingerprint,
-                score=None,
-                stdout="",
-                stderr=failure_message,
-                failure_message=failure_message,
-                reused_cached_result=False,
-                retained_modified_candidate=False,
-            )
-
-        self._last_evaluation = CachedEvaluationResult(
-            fingerprint=snapshot.fingerprint,
-            score=outcome.score,
-            stdout=outcome.stdout,
-            stderr=outcome.stderr,
-        )
+        baseline_snapshot = self._baseline_snapshot
+        baseline_evaluation, reused_baseline_result = self._evaluate_if_needed(baseline_snapshot)
+        self._last_evaluation = baseline_evaluation
+        self._sync_snapshot(baseline_snapshot)
         return FinalCandidateEvaluation(
-            fingerprint=snapshot.fingerprint,
-            score=outcome.score,
-            stdout=outcome.stdout,
-            stderr=outcome.stderr,
-            failure_message=None,
-            reused_cached_result=False,
+            fingerprint=baseline_snapshot.fingerprint,
+            score=baseline_evaluation.score,
+            stdout=baseline_evaluation.stdout,
+            stderr=baseline_evaluation.stderr,
+            failure_message=baseline_evaluation.failure_message,
+            reused_cached_result=reused_baseline_result,
             retained_modified_candidate=False,
         )
 
@@ -256,32 +242,79 @@ class ExperimentEvalTool:
             self._current_base_commit,
             clean_untracked=True,
         )
-        self._workspace.apply_patch(self._orchestrator_worktree_path, snapshot.patch)
+        self._workspace.apply_patch(self._orchestrator_worktree_path, snapshot.orchestrator_patch)
         self._last_synced_fingerprint = snapshot.fingerprint
 
     def _snapshot_candidate(self) -> CandidateSnapshot:
-        patch = self._workspace.diff_against_ref(
+        orchestrator_patch = self._workspace.diff_against_ref(
             self._agent_worktree_path,
             self._current_base_commit,
             exclude_paths=self._excluded_patch_paths,
         )
+        evaluation_patch = self._compose_evaluation_patch(orchestrator_patch)
         return CandidateSnapshot(
-            fingerprint=hashlib.sha256(patch).hexdigest(),
-            patch=patch,
+            fingerprint=hashlib.sha256(evaluation_patch).hexdigest(),
+            orchestrator_patch=orchestrator_patch,
+            evaluation_patch=evaluation_patch,
+            has_agent_changes=bool(orchestrator_patch),
         )
 
-    def _run_evaluation(self) -> EvaluationOutcome:
-        candidate_target_path = self._orchestrator_worktree_path / self._target_relative_path
+    def _run_evaluation(self, snapshot: CandidateSnapshot) -> EvaluationOutcome:
+        prepare_hidden_eval_sandbox(
+            source_path=self._hidden_eval_cwd,
+            sandbox_path=self._hidden_eval_sandbox_path,
+            workspace=self._workspace,
+            patch=snapshot.evaluation_patch,
+        )
+        candidate_target_path = self._hidden_eval_sandbox_path / self._target_relative_path
         environment = build_candidate_environment(
             self._environment,
             candidate_target_path=candidate_target_path,
-            candidate_repo_root=self._orchestrator_worktree_path,
+            candidate_repo_root=self._hidden_eval_sandbox_path,
         )
         return self._evaluation_runner.run(
-            self._hidden_eval_cwd,
+            self._hidden_eval_sandbox_path,
             self._hidden_eval_command,
             environment=environment,
         )
+
+    def _evaluate_if_needed(self, snapshot: CandidateSnapshot) -> tuple[CachedEvaluationResult, bool]:
+        cached = self._last_evaluation
+        if cached is not None and cached.fingerprint == snapshot.fingerprint:
+            return cached, True
+        return self._evaluate_snapshot(snapshot), False
+
+    def _evaluate_snapshot(self, snapshot: CandidateSnapshot) -> CachedEvaluationResult:
+        try:
+            outcome = self._run_evaluation(snapshot)
+        except ExperimentOrchestratorError as exc:
+            failure_message = str(exc)
+            return CachedEvaluationResult(
+                fingerprint=snapshot.fingerprint,
+                score=None,
+                stdout="",
+                stderr=failure_message,
+                failure_message=failure_message,
+            )
+
+        return CachedEvaluationResult(
+            fingerprint=snapshot.fingerprint,
+            score=outcome.score,
+            stdout=outcome.stdout,
+            stderr=outcome.stderr,
+        )
+
+    def _build_current_base_patch(self) -> bytes:
+        if self._evaluation_base_commit == self._current_base_commit:
+            return b""
+        return self._workspace.diff_refs(self._evaluation_base_ref, self._current_base_commit)
+
+    def _compose_evaluation_patch(self, orchestrator_patch: bytes) -> bytes:
+        if not self._current_base_patch:
+            return orchestrator_patch
+        if not orchestrator_patch:
+            return self._current_base_patch
+        return self._current_base_patch + orchestrator_patch
 
     def _retain_candidate_if_best(
         self,
@@ -330,6 +363,8 @@ class ExperimentEvalTool:
         return "Candidate evaluated successfully but did not beat the current best score."
 
     def _sanitize_failure_message(self, message: str) -> str:
+        if message.startswith("Patch application failed"):
+            return "Evaluation failed because the candidate included runtime-generated file changes."
         if message.startswith("Evaluation command failed"):
             return "Evaluation failed due to a runtime error."
         if "must print a numeric score" in message or "did not print a score" in message:

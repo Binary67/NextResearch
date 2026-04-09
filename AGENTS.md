@@ -29,6 +29,8 @@ Update it when adding, removing, renaming, or moving core modules.
   - Git worktree, branch, patch, and commit operations.
 - `src/Orchestration/EvaluationRunner.py`
   - Runs the external evaluator and parses the score.
+- `src/Orchestration/HiddenEvalSandbox.py`
+  - Builds disposable hidden-eval sandboxes and overlays candidate patches before scoring.
 - `src/Orchestration/ExperimentLedger.py`
   - Appends and reads the JSONL experiment ledger.
 - `src/Orchestration/ExperimentVisualization.py`

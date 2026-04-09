@@ -28,6 +28,7 @@ def cleanup_experiment_workspaces(
     agent_worktree_path: Path,
     branch_name: str,
     preserve_branch: bool = False,
+    extra_paths: tuple[Path, ...] = (),
 ) -> None:
     try:
         workspace.remove_worktree(agent_worktree_path)
@@ -35,8 +36,13 @@ def cleanup_experiment_workspaces(
         try:
             workspace.remove_worktree(orchestrator_worktree_path)
         finally:
-            if not preserve_branch:
-                workspace.delete_branch(branch_name)
+            try:
+                for path in extra_paths:
+                    if path.exists():
+                        shutil.rmtree(path)
+            finally:
+                if not preserve_branch:
+                    workspace.delete_branch(branch_name)
 
 
 def print_edit_policy(edit_policy: EditPolicy) -> None:
@@ -135,7 +141,7 @@ def build_edit_policy(
 
 
 def docs_excluded_patch_paths(target_relative_path: Path) -> tuple[str, ...]:
-    return orchestrator_managed_paths(target_relative_path)
+    return orchestrator_managed_paths(target_relative_path) + candidate_runtime_artifact_paths(target_relative_path)
 
 
 def runtime_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
@@ -152,6 +158,19 @@ def orchestrator_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
 def runtime_managed_session_paths() -> tuple[str, ...]:
     return (
         ".nextresearch/",
+    )
+
+
+def candidate_runtime_artifact_paths(target_relative_path: Path) -> tuple[str, ...]:
+    return tuple(
+        _target_scoped_path(target_relative_path, Path(relative_path))
+        for relative_path in runtime_generated_candidate_paths()
+    )
+
+
+def runtime_generated_candidate_paths() -> tuple[str, ...]:
+    return (
+        "model.pkl",
     )
 
 
