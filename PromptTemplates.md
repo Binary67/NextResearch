@@ -29,7 +29,6 @@ Your job:
 
 Constraints:
 - Hidden evaluation is only available through `{eval_tool_name}`.
-- Do not edit files under `.nextresearch`.
 - Keep each change hypothesis-focused, but you may switch to a new plausible hypothesis after evaluation feedback clearly rejects the current one.
 - Do not bundle unrelated tweaks.
 - Avoid speculative refactors.

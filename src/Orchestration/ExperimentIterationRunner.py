@@ -145,6 +145,7 @@ def run_iteration(
             agent_worktree_path,
             agent_cwd,
             target_relative_path,
+            editable_paths=config.editable_paths,
         )
         print_edit_policy(agent_edit_policy)
         eval_tool = ExperimentEvalTool(
@@ -314,10 +315,11 @@ def _build_experiment_instruction(
     agent_eval_budget: int,
     edit_policy: EditPolicy,
 ) -> str:
-    return (
-        f"{edit_policy.prompt_prefix()}\n\n"
-        f"{build_experiment_prompt(objective_name=objective_name, agent_eval_budget=agent_eval_budget)}"
-    )
+    prompt = build_experiment_prompt(objective_name=objective_name, agent_eval_budget=agent_eval_budget)
+    prefix = edit_policy.prompt_prefix()
+    if not prefix:
+        return prompt
+    return f"{prefix}\n\n{prompt}"
 
 
 def _build_eval_dynamic_tool(eval_tool: ExperimentEvalTool) -> CodexDynamicTool:

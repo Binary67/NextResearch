@@ -63,28 +63,25 @@ The run configuration includes:
 
 - `target_repo_path`
 - `objective_name`
-- `evaluation_command`
+- `hidden_eval_cwd`
+- `hidden_eval_command`
 - `iteration_count`
 - `optimization_direction`
 - `agent_eval_budget`
-- optional `evaluation_file_path`
 - optional `baseline_branch`
 - optional `editable_paths`
-- optional `non_editable_paths`
-- optional `non_readable_paths`
 
 Prompt wording is loaded from the top-level `PromptTemplates.md` file.
+When provided, `editable_paths` is a repo-root-relative list of files and/or directories Codex may modify.
 
 ### Evaluation Contract
 
-The evaluator is treated as an external command and must follow this contract:
+The hidden evaluator is treated as an external command and must follow this contract:
 
-- it is executed with the configured `evaluation_command`
+- it is executed with the configured `hidden_eval_command`
 - a non-zero exit code fails the run
 - the last non-empty line of stdout must be parseable as a `float`
 - `optimization_direction` decides whether lower or higher scores are better
-
-If the evaluator file path cannot be inferred from the command, you must provide `evaluation_file_path` explicitly.
 
 ## Minimal Usage
 
@@ -96,7 +93,8 @@ from src.Orchestration import ExperimentOrchestrator, ExperimentRunConfig
 config = ExperimentRunConfig(
     target_repo_path="D:/path/to/target-repo",
     objective_name="maximize-evaluation-score",
-    evaluation_command="uv run evaluation.py",
+    hidden_eval_cwd="D:/path/to/hidden-eval",
+    hidden_eval_command="uv run hidden_eval.py",
     iteration_count=3,
     optimization_direction="minimize",
     agent_eval_budget=3,
@@ -183,18 +181,16 @@ On the first run, `Main.py` creates a starter `config.toml` in the repo root and
 
 - `target_repo_path`
 - `objective_name`
-- `evaluation_command`
+- `hidden_eval_cwd`
+- `hidden_eval_command`
 - `iteration_count`
 - `optimization_direction`
 
 Optional fields are:
 
 - `agent_eval_budget`
-- `evaluation_file_path`
 - `baseline_branch`
 - `editable_paths`
-- `non_editable_paths`
-- `non_readable_paths`
 
 `ResetExperiments.py` is a local reset helper for starting fresh on a single objective:
 

@@ -42,6 +42,7 @@ class ExperimentRunConfig:
     hidden_eval_command: str
     agent_eval_budget: int = 3
     baseline_branch: str | None = None
+    editable_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.optimization_direction not in {"minimize", "maximize"}:

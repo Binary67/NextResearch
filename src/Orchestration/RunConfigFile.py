@@ -18,6 +18,7 @@ agent_eval_budget = 3
 
 # Optional examples:
 # baseline_branch = "main"
+# editable_paths = ["src/", "train.py"]
 """
 
 
@@ -72,6 +73,20 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
     elif agent_eval_budget < 1:
         errors.append("agent_eval_budget must be at least 1.")
 
+    editable_paths: tuple[str, ...] = ()
+    if "editable_paths" in raw_config:
+        raw_editable_paths = raw_config["editable_paths"]
+        if not isinstance(raw_editable_paths, list):
+            errors.append("editable_paths must be an array of strings when provided.")
+        else:
+            editable_values: list[str] = []
+            for index, value in enumerate(raw_editable_paths, start=1):
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"editable_paths[{index}] must be a non-empty string.")
+                    continue
+                editable_values.append(value.strip())
+            editable_paths = tuple(editable_values)
+
     for key in ("baseline_branch",):
         if key in raw_config:
             value = raw_config[key]
@@ -81,7 +96,6 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
     removed_keys = (
         "evaluation_command",
         "evaluation_file_path",
-        "editable_paths",
         "non_editable_paths",
         "non_readable_paths",
     )
@@ -91,7 +105,7 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
             "Removed config field(s) are no longer supported: " + ", ".join(present_removed_keys) + "."
         )
 
-    allowed_keys = set(required_keys) | {"agent_eval_budget", "baseline_branch"}
+    allowed_keys = set(required_keys) | {"agent_eval_budget", "baseline_branch", "editable_paths"}
     unexpected_keys = sorted(key for key in raw_config if key not in allowed_keys and key not in removed_keys)
     if unexpected_keys:
         errors.append("Unsupported config field(s): " + ", ".join(unexpected_keys) + ".")
@@ -109,4 +123,5 @@ def load_run_config(config_path: Path = CONFIG_PATH) -> ExperimentRunConfig:
         hidden_eval_command=raw_config["hidden_eval_command"],
         agent_eval_budget=agent_eval_budget,
         baseline_branch=raw_config.get("baseline_branch"),
+        editable_paths=editable_paths,
     )

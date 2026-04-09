@@ -22,20 +22,12 @@ class _GitPathSnapshot:
     status: str
     fingerprint: str
 
-    @property
-    def is_tracked(self) -> bool:
-        return self.status != "??"
-
 
 @dataclass(frozen=True)
 class _SessionPathChange:
     path: str
     current_status: str
     baseline_status: str | None
-
-    @property
-    def is_new_untracked(self) -> bool:
-        return self.current_status == "??" and self.baseline_status is None
 
 
 class CodexSessionRunner:
@@ -150,16 +142,13 @@ class CodexSessionRunner:
 
     def _policy_candidate_paths(self, changes: list[_SessionPathChange]) -> list[str]:
         candidate_paths: list[str] = []
+        seen_paths: set[str] = set()
         for change in changes:
-            if not self._was_tracked_at_session_start(change):
+            if not change.path or change.path in seen_paths:
                 continue
+            seen_paths.add(change.path)
             candidate_paths.append(change.path)
         return candidate_paths
-
-    def _was_tracked_at_session_start(self, change: _SessionPathChange) -> bool:
-        if change.baseline_status is None:
-            return False
-        return change.baseline_status != "??"
 
     def _record_snapshot(
         self,

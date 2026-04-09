@@ -46,14 +46,8 @@ def cleanup_experiment_workspaces(
 
 
 def print_edit_policy(edit_policy: EditPolicy) -> None:
-    editable_text = ", ".join(edit_policy.editable_rule_paths()) or "all repo paths"
-    non_editable_text = ", ".join(edit_policy.non_editable_rule_paths()) or "none"
-    non_readable_text = ", ".join(edit_policy.non_readable_rule_paths()) or "none"
-    print(f"Codex edit policy repo_root={edit_policy.repo_root}")
-    print(f"Codex edit policy mode={edit_policy.mode_label}")
-    print(f"Codex editable_paths={editable_text}")
-    print(f"Codex non_editable_paths={non_editable_text}")
-    print(f"Codex non_readable_paths={non_readable_text}")
+    print(f"Codex writable scope repo_root={edit_policy.repo_root}")
+    print(f"Codex editable_paths={edit_policy.writable_scope_summary()}")
 
 
 def build_shared_target_environment(cache_root: Path) -> dict[str, str]:
@@ -129,14 +123,13 @@ def build_edit_policy(
     worktree_path: Path,
     session_cwd: Path,
     target_relative_path: Path,
+    editable_paths: tuple[str, ...] = (),
 ) -> EditPolicy:
-    target_scope = target_relative_path.as_posix().strip("/")
-    editable_paths = () if not target_scope or target_scope == "." else (_directory_path(target_scope),)
     return EditPolicy.from_paths(
         worktree_path,
         session_cwd=session_cwd,
         editable_paths=editable_paths,
-        non_editable_paths=orchestrator_managed_paths(target_relative_path),
+        blocked_write_paths=orchestrator_managed_paths(target_relative_path),
     )
 
 

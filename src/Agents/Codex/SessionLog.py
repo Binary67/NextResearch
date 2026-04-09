@@ -136,32 +136,15 @@ class CodexSessionLog:
             ],
         )
 
-    def append_edit_policy(
-        self,
-        thread_id: str,
-        mode: str,
-        editable_paths: list[str],
-        non_editable_paths: list[str],
-        non_readable_paths: list[str],
-        runtime_managed_paths: list[str] | None = None,
-    ) -> Path:
-        editable_text = "\n".join(f"- {path}" for path in editable_paths) if editable_paths else "All repo paths\n"
-        non_editable_text = (
-            "\n".join(f"- {path}" for path in non_editable_paths) if non_editable_paths else "None\n"
+    def append_writable_scope(self, thread_id: str, editable_paths: list[str]) -> Path:
+        if editable_paths:
+            content = "\n".join(f"- {path}" for path in editable_paths)
+        else:
+            content = "All repo paths\n"
+        return self._append_sections(
+            self.path_for_thread(thread_id),
+            [self._multi_line_section("Writable Scope", content)],
         )
-        non_readable_text = (
-            "\n".join(f"- {path}" for path in non_readable_paths) if non_readable_paths else "None\n"
-        )
-        sections = [
-            self._single_line_section("Edit Policy Mode", mode),
-            self._multi_line_section("Editable Paths", editable_text),
-            self._multi_line_section("Non-Editable Paths", non_editable_text),
-            self._multi_line_section("Non-Readable Paths", non_readable_text),
-        ]
-        if runtime_managed_paths:
-            runtime_managed_text = "\n".join(f"- {path}" for path in runtime_managed_paths)
-            sections.append(self._multi_line_section("Internal Runtime-Managed Paths", runtime_managed_text))
-        return self._append_sections(self.path_for_thread(thread_id), sections)
 
     def append_dynamic_tool_registration(self, thread_id: str, tools: list[tuple[str, str]]) -> Path:
         if not tools:

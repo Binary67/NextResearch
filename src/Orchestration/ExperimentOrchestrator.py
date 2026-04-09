@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.Agents.Codex import CodexSessionRunner
 from src.Agents.Codex.SessionLog import CodexSessionLog
+from src.EditPolicy import EditPolicy
 
 from .EvaluationRunner import EvaluationRunner
 from .ExperimentLedger import ExperimentLedger
@@ -63,6 +64,13 @@ class ExperimentOrchestrator:
             raise ValueError("iteration_count must be at least 1.")
 
         context = self._resolve_repo_context(config.target_repo_path)
+        editable_path_errors = EditPolicy.validate_config_paths(
+            context.repo_root,
+            editable_paths=config.editable_paths,
+        )
+        if editable_path_errors:
+            formatted_errors = "\n".join(f"- {entry}" for entry in editable_path_errors)
+            raise ExperimentOrchestratorError(f"Invalid editable_paths for {context.repo_root}:\n{formatted_errors}")
         objective_slug = self._slugify(config.objective_name)
         target_environment = build_shared_target_environment(self._cache_root)
         hidden_eval_cwd = self._resolve_hidden_eval_cwd(config.hidden_eval_cwd)
