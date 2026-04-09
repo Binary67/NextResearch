@@ -36,7 +36,7 @@ def cleanup_experiment_workspaces(
 
 def print_edit_policy(edit_policy: EditPolicy) -> None:
     print(f"Codex writable scope repo_root={edit_policy.repo_root}")
-    print(f"Codex editable_paths={edit_policy.writable_scope_summary()}")
+    print(f"Codex writable_scope={edit_policy.writable_scope_summary()}")
 
 
 def build_shared_target_environment(cache_root: Path) -> dict[str, str]:
@@ -123,12 +123,21 @@ def build_edit_policy(
     worktree_path: Path,
     session_cwd: Path,
     editable_paths: tuple[str, ...] = (),
+    extra_writable_roots: tuple[Path | str, ...] = (),
 ) -> EditPolicy:
+    effective_editable_paths = editable_paths
+    if effective_editable_paths:
+        manifest_paths = ("pyproject.toml", "uv.lock")
+        effective_editable_paths = tuple(
+            dict.fromkeys((*effective_editable_paths, *manifest_paths))
+        )
+
     return EditPolicy.from_paths(
         worktree_path,
         session_cwd=session_cwd,
-        editable_paths=editable_paths,
+        editable_paths=effective_editable_paths,
         blocked_write_paths=(),
+        extra_writable_roots=extra_writable_roots,
     )
 
 

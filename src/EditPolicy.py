@@ -28,6 +28,21 @@ class EditPolicyRule:
 
 
 @dataclass(frozen=True)
+class EditPolicyExtraRoot:
+    path: Path
+    normalized_path: str
+
+    @property
+    def display_path(self) -> str:
+        return _ensure_trailing_separator(str(self.path))
+
+    def matches(self, normalized_path: str) -> bool:
+        if normalized_path == self.normalized_path:
+            return True
+        return normalized_path.startswith(f"{self.normalized_path}{os.sep}")
+
+
+@dataclass(frozen=True)
 class EditPolicyDecision:
     requested_path: str
     normalized_path: str
@@ -46,6 +61,7 @@ class EditPolicy:
     session_cwd: Path
     editable_rules: tuple[EditPolicyRule, ...]
     blocked_write_rules: tuple[EditPolicyRule, ...]
+    extra_writable_roots: tuple[EditPolicyExtraRoot, ...]
 
     @classmethod
     def from_paths(
@@ -54,6 +70,7 @@ class EditPolicy:
         session_cwd: Path | str | None = None,
         editable_paths: tuple[str, ...] = (),
         blocked_write_paths: tuple[str, ...] = (),
+        extra_writable_roots: tuple[Path | str, ...] = (),
     ) -> EditPolicy:
         root = Path(repo_root).expanduser().resolve()
         if not root.exists():
@@ -71,11 +88,13 @@ class EditPolicy:
 
         editable_rules = tuple(cls._build_rule(root, raw_path) for raw_path in editable_candidates)
         blocked_write_rules = tuple(cls._build_rule(root, raw_path) for raw_path in blocked_candidates)
+        extra_root_rules = cls._build_extra_root_rules(root, extra_writable_roots)
         return cls(
             repo_root=root,
             session_cwd=cwd,
             editable_rules=editable_rules,
             blocked_write_rules=blocked_write_rules,
+            extra_writable_roots=extra_root_rules,
         )
 
     @classmethod
@@ -104,24 +123,32 @@ class EditPolicy:
     def editable_rule_paths(self) -> tuple[str, ...]:
         return tuple(rule.display_path for rule in self.editable_rules)
 
-    def prompt_prefix(self) -> str:
-        if not self.editable_rules:
-            return ""
+    def writable_scope_paths(self) -> tuple[str, ...]:
+        entries: list[str] = []
+        if self.editable_rules:
+            entries.extend(rule.display_path for rule in self.editable_rules)
+        else:
+            entries.append("all repo paths")
+        entries.extend(root.display_path for root in self.extra_writable_roots)
+        return tuple(entries)
 
-        editable_text = ", ".join(self.editable_rule_paths())
-        return "\n".join(
-            (
-                "Writable scope for this run:",
-                f"- Allowed write paths: {editable_text}",
-                "- Only modify files under the allowed write paths for this run.",
-            )
-        )
+    def prompt_prefix(self) -> str:
+        lines = [
+            "Writable scope for this run:",
+            f"- Allowed repo write paths: {self._repo_writable_scope_text()}",
+        ]
+        if self.extra_writable_roots:
+            extra_root_text = ", ".join(root.display_path for root in self.extra_writable_roots)
+            lines.append(f"- Allowed extra write paths: {extra_root_text}")
+        lines.append("- Only modify files under the allowed write paths for this run.")
+        return "\n".join(lines)
 
     def writable_scope_summary(self) -> str:
-        editable_text = ", ".join(self.editable_rule_paths())
-        if editable_text:
-            return editable_text
-        return "all repo paths"
+        entries = [f"repo={self._repo_writable_scope_text()}"]
+        if self.extra_writable_roots:
+            extra_root_text = ", ".join(root.display_path for root in self.extra_writable_roots)
+            entries.append(f"extra={extra_root_text}")
+        return "; ".join(entries)
 
     def resolve_path(self, path: str | Path) -> Path | None:
         candidate = Path(path)
@@ -131,23 +158,32 @@ class EditPolicy:
         resolved = candidate.expanduser().resolve(strict=False)
         try:
             resolved.relative_to(self.repo_root)
+            return resolved
         except ValueError:
-            return None
-        return resolved
+            return resolved if self._match_extra_root(resolved) is not None else None
 
     def evaluate_read_path(self, path: str | Path) -> EditPolicyDecision:
         requested_path = str(path)
-        candidate_info = self._normalize_candidate_path(self.repo_root, self.session_cwd, path)
-        if candidate_info is None:
+        classification = self._classify_candidate_path(path)
+        if classification is None:
             return EditPolicyDecision(
                 requested_path=requested_path,
                 normalized_path=requested_path,
                 display_path_value=requested_path,
                 allowed=False,
-                reason="path is outside the repository root",
+                reason="path is outside the repository root and allowed extra writable roots",
             )
 
-        normalized_path, display_path = candidate_info
+        normalized_path, display_path, extra_root = classification
+        if extra_root is not None:
+            return EditPolicyDecision(
+                requested_path=requested_path,
+                normalized_path=normalized_path,
+                display_path_value=display_path,
+                allowed=True,
+                reason=f"path is readable because it is under allowed extra root `{extra_root.display_path}`",
+            )
+
         return EditPolicyDecision(
             requested_path=requested_path,
             normalized_path=normalized_path,
@@ -157,13 +193,26 @@ class EditPolicy:
         )
 
     def evaluate_write_path(self, path: str | Path) -> EditPolicyDecision:
-        read_decision = self.evaluate_read_path(path)
-        if not read_decision.allowed:
-            return read_decision
-
         requested_path = str(path)
-        normalized_path = read_decision.normalized_path
-        display_path = read_decision.display_path_value
+        classification = self._classify_candidate_path(path)
+        if classification is None:
+            return EditPolicyDecision(
+                requested_path=requested_path,
+                normalized_path=requested_path,
+                display_path_value=requested_path,
+                allowed=False,
+                reason="path is outside the repository root and allowed extra writable roots",
+            )
+
+        normalized_path, display_path, extra_root = classification
+        if extra_root is not None:
+            return EditPolicyDecision(
+                requested_path=requested_path,
+                normalized_path=normalized_path,
+                display_path_value=display_path,
+                allowed=True,
+                reason=f"path is editable because it is under allowed extra root `{extra_root.display_path}`",
+            )
 
         blocked_rule = self._match_rule(normalized_path, self.blocked_write_rules)
         if blocked_rule is not None:
@@ -213,6 +262,45 @@ class EditPolicy:
             seen.add(key)
             decisions.append(decision)
         return decisions
+
+    @classmethod
+    def _build_extra_root_rules(
+        cls,
+        repo_root: Path,
+        raw_paths: tuple[Path | str, ...],
+    ) -> tuple[EditPolicyExtraRoot, ...]:
+        if isinstance(raw_paths, (str, Path)):
+            raise TypeError(
+                "extra_writable_roots must be a tuple[Path | str, ...] or list[Path | str], not a single path."
+            )
+
+        rules: list[EditPolicyExtraRoot] = []
+        seen_paths: set[str] = set()
+        for raw_path in raw_paths:
+            resolved = Path(raw_path).expanduser().resolve()
+            if not resolved.exists():
+                raise ValueError(f"extra_writable_root does not exist: {raw_path}")
+            if not resolved.is_dir():
+                raise ValueError(f"extra_writable_root is not a directory: {raw_path}")
+            try:
+                resolved.relative_to(repo_root)
+            except ValueError:
+                pass
+            else:
+                raise ValueError(f"extra_writable_root must stay outside repo_root: {raw_path}")
+
+            normalized_path = _normalize_absolute_path(resolved)
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            rules.append(
+                EditPolicyExtraRoot(
+                    path=resolved,
+                    normalized_path=normalized_path,
+                )
+            )
+
+        return tuple(rules)
 
     @staticmethod
     def _validate_rule_paths(field_name: str, raw_paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -320,27 +408,28 @@ class EditPolicy:
             is_directory=is_directory,
         )
 
-    @classmethod
-    def _normalize_candidate_path(
-        cls,
-        repo_root: Path,
-        session_cwd: Path,
-        path: str | Path,
-    ) -> tuple[str, str] | None:
-        candidate = cls._resolve_candidate_path(session_cwd, path)
-        try:
-            relative = candidate.relative_to(repo_root)
-        except ValueError:
-            return None
-        display_path = cls._display_path_from_relative(relative)
-        return cls._fold_case(display_path), display_path
-
     @staticmethod
     def _resolve_candidate_path(session_cwd: Path, path: str | Path) -> Path:
         candidate = Path(path)
         if not candidate.is_absolute():
             candidate = session_cwd / candidate
         return candidate.expanduser().resolve(strict=False)
+
+    def _classify_candidate_path(
+        self,
+        path: str | Path,
+    ) -> tuple[str, str, EditPolicyExtraRoot | None] | None:
+        candidate = self._resolve_candidate_path(self.session_cwd, path)
+        try:
+            relative = candidate.relative_to(self.repo_root)
+        except ValueError:
+            extra_root = self._match_extra_root(candidate)
+            if extra_root is None:
+                return None
+            return _normalize_absolute_path(candidate), str(candidate), extra_root
+
+        display_path = self._display_path_from_relative(relative)
+        return self._fold_case(display_path), display_path, None
 
     @classmethod
     def _display_path_from_relative(cls, relative_path: Path) -> str:
@@ -361,3 +450,26 @@ class EditPolicy:
             if rule.matches(normalized_path):
                 return rule
         return None
+
+    def _match_extra_root(self, candidate: Path) -> EditPolicyExtraRoot | None:
+        normalized_candidate = _normalize_absolute_path(candidate)
+        for root in self.extra_writable_roots:
+            if root.matches(normalized_candidate):
+                return root
+        return None
+
+    def _repo_writable_scope_text(self) -> str:
+        editable_text = ", ".join(self.editable_rule_paths())
+        if editable_text:
+            return editable_text
+        return "all repo paths"
+
+
+def _normalize_absolute_path(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _ensure_trailing_separator(value: str) -> str:
+    if value.endswith(("/", "\\")):
+        return value
+    return f"{value}{os.sep}"

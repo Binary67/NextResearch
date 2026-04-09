@@ -142,6 +142,7 @@ def run_iteration(
             agent_worktree_path,
             agent_cwd,
             editable_paths=config.editable_paths,
+            extra_writable_roots=(agent_runtime_path,),
         )
         print_edit_policy(agent_edit_policy)
         eval_tool = ExperimentEvalTool(

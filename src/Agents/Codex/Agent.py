@@ -379,7 +379,7 @@ class CodexAgent:
         if self._edit_policy is not None:
             self._session_log.append_writable_scope(
                 self._thread_id,
-                list(self._edit_policy.editable_rule_paths()),
+                list(self._edit_policy.writable_scope_paths()),
             )
         if self._dynamic_tools:
             self._session_log.append_dynamic_tool_registration(
