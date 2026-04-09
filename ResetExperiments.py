@@ -11,6 +11,7 @@ from src.Orchestration.ExperimentVisualization import progress_chart_path
 TARGET_REPO_PATH = "D:/HousePricePrediction"
 OBJECTIVE_NAME = "maximize-evaluation-score"
 DELETE_ALL_LOGS = True
+DELETE_ALL_RUNTIME = True
 
 
 def reset_experiment_state(
@@ -18,25 +19,34 @@ def reset_experiment_state(
     objective_name: str,
     delete_all_logs: bool = False,
     logs_root: str | Path | None = None,
+    delete_all_runtime: bool = False,
+    runtime_root: str | Path | None = None,
 ) -> dict[str, int]:
     project_root = Path(__file__).resolve().parent
     resolved_logs_root = Path(logs_root).resolve() if logs_root is not None else project_root / "Logs"
+    resolved_runtime_root = (
+        Path(runtime_root).resolve() if runtime_root is not None else project_root / "Runtime"
+    )
     objective_slug = _slugify(objective_name)
     repo_root = _resolve_repo_root(Path(target_repo_path))
-    objective_worktrees_root = resolved_logs_root / "Worktrees" / objective_slug
+    runtime_worktrees_root = resolved_runtime_root / "Worktrees"
+    objective_runtime_root = runtime_worktrees_root / objective_slug
+    registered_worktree_scope_root = runtime_worktrees_root if delete_all_runtime else objective_runtime_root
 
     removed_registered_worktrees = 0
     removed_branch_count = 0
     removed_session_logs = 0
     removed_ledger_entries = 0
     removed_progress_chart = 0
+    removed_runtime_directory = 0
+    removed_runtime_root = 0
 
     _run_git(repo_root, "worktree", "prune")
 
     for worktree_path in _list_registered_worktrees(repo_root):
         if worktree_path == repo_root:
             continue
-        if worktree_path.is_relative_to(objective_worktrees_root):
+        if worktree_path.is_relative_to(registered_worktree_scope_root):
             if worktree_path.exists():
                 _run_git(repo_root, "worktree", "remove", "--force", str(worktree_path))
                 removed_registered_worktrees += 1
@@ -48,10 +58,13 @@ def reset_experiment_state(
             _run_git(repo_root, "branch", "-D", branch_name)
             removed_branch_count += 1
 
-    removed_worktree_directory = 0
-    if objective_worktrees_root.exists():
-        shutil.rmtree(objective_worktrees_root)
-        removed_worktree_directory = 1
+    if delete_all_runtime:
+        if resolved_runtime_root.exists():
+            shutil.rmtree(resolved_runtime_root)
+            removed_runtime_root = 1
+    elif objective_runtime_root.exists():
+        shutil.rmtree(objective_runtime_root)
+        removed_runtime_directory = 1
 
     removed_logs_directory = 0
     if delete_all_logs:
@@ -61,7 +74,8 @@ def reset_experiment_state(
         return {
             "removed_registered_worktrees": removed_registered_worktrees,
             "removed_branches": removed_branch_count,
-            "removed_worktree_directory": removed_worktree_directory,
+            "removed_runtime_directory": removed_runtime_directory,
+            "removed_runtime_root": removed_runtime_root,
             "removed_ledger_entries": 0,
             "removed_session_logs": 0,
             "removed_progress_chart": 0,
@@ -108,7 +122,8 @@ def reset_experiment_state(
     return {
         "removed_registered_worktrees": removed_registered_worktrees,
         "removed_branches": removed_branch_count,
-        "removed_worktree_directory": removed_worktree_directory,
+        "removed_runtime_directory": removed_runtime_directory,
+        "removed_runtime_root": removed_runtime_root,
         "removed_ledger_entries": removed_ledger_entries,
         "removed_session_logs": removed_session_logs,
         "removed_progress_chart": removed_progress_chart,
@@ -124,6 +139,7 @@ def main() -> None:
         target_repo_path=TARGET_REPO_PATH,
         objective_name=OBJECTIVE_NAME,
         delete_all_logs=DELETE_ALL_LOGS,
+        delete_all_runtime=DELETE_ALL_RUNTIME,
     )
 
     print(f"Reset completed for objective '{OBJECTIVE_NAME}'.")

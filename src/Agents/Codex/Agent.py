@@ -79,6 +79,8 @@ class _CommandLogState:
     command: str = ""
     status: str | None = None
     exit_code: int | None = None
+    duration_ms: int | None = None
+    output: str = ""
 
     def update_from_item(self, item: dict[str, Any]) -> None:
         command = item.get("command")
@@ -93,11 +95,25 @@ class _CommandLogState:
         if isinstance(exit_code, int):
             self.exit_code = exit_code
 
+        duration_ms = item.get("durationMs")
+        if isinstance(duration_ms, int):
+            self.duration_ms = duration_ms
+
+        aggregated_output = item.get("aggregatedOutput")
+        if isinstance(aggregated_output, str) and aggregated_output:
+            self.output = aggregated_output
+
+    def append_output(self, value: str) -> None:
+        if value:
+            self.output += value
+
     def to_entry(self) -> CommandLogEntry:
         return CommandLogEntry(
             command=self.command or "(unknown command)",
             status=self.status,
             exit_code=self.exit_code,
+            duration_ms=self.duration_ms,
+            output=self.output,
         )
 
 
@@ -518,6 +534,13 @@ class CodexAgent:
                     output_text = self._extract_delta_text(params)
                     if isinstance(item_id, str) and output_text:
                         collector.file_change_state(item_id).append_output(output_text)
+                    continue
+
+                if method == "item/commandExecution/outputDelta":
+                    item_id = params.get("itemId")
+                    output_text = self._extract_delta_text(params)
+                    if isinstance(item_id, str) and output_text:
+                        collector.command_state(item_id).append_output(output_text)
                     continue
 
                 if method == "item/completed":
