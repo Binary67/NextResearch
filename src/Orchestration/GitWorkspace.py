@@ -46,15 +46,6 @@ class GitWorkspaceManager:
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
         self.run_git(self._repo_root, "worktree", "add", "--detach", str(worktree_path), ref)
 
-    def create_sparse_detached_worktree(
-        self,
-        worktree_path: Path,
-        ref: str,
-        sparse_patterns: list[str],
-    ) -> None:
-        self.create_detached_worktree(worktree_path, ref)
-        self.configure_sparse_checkout(worktree_path, sparse_patterns)
-
     def create_experiment_worktree(self, branch_name: str, worktree_path: Path, base_commit: str) -> None:
         self.run_git(self._repo_root, "branch", branch_name, base_commit)
         if worktree_path.exists():
@@ -75,21 +66,6 @@ class GitWorkspaceManager:
     def force_branch(self, branch_name: str, target_commit: str) -> None:
         self.run_git(self._repo_root, "branch", "-f", branch_name, target_commit)
 
-    def configure_sparse_checkout(self, worktree_path: Path, sparse_patterns: list[str]) -> None:
-        normalized_patterns = [self._normalize_sparse_pattern(pattern) for pattern in sparse_patterns if pattern.strip()]
-        if not normalized_patterns:
-            raise ExperimentOrchestratorError("Sparse checkout requires at least one readable path.")
-
-        self.run_git(worktree_path, "sparse-checkout", "init", "--no-cone")
-        self.run_git_with_input(
-            worktree_path,
-            "\n".join(normalized_patterns) + "\n",
-            "sparse-checkout",
-            "set",
-            "--no-cone",
-            "--stdin",
-        )
-
     def commit_worktree_if_needed(
         self,
         worktree_path: Path,
@@ -106,14 +82,6 @@ class GitWorkspaceManager:
         self.run_git(worktree_path, "commit", "-m", commit_message)
         return self.git_output(worktree_path, "rev-parse", branch_name)
 
-    def list_tracked_paths(self, cwd: Path) -> list[str]:
-        output = self.git_output_bytes(cwd, "ls-files", "-z")
-        return [
-            entry.decode("utf-8", errors="replace")
-            for entry in output.split(b"\0")
-            if entry
-        ]
-
     def diff_against_ref(
         self,
         worktree_path: Path,
@@ -126,6 +94,18 @@ class GitWorkspaceManager:
             args.extend(["--", "."])
             args.extend(f":(exclude){path}" for path in exclude_paths if path)
         return self.git_output_bytes(worktree_path, *args)
+
+    def diff_refs(
+        self,
+        base_ref: str,
+        target_ref: str,
+        exclude_paths: tuple[str, ...] = (),
+    ) -> bytes:
+        args = ["diff", "--binary", base_ref, target_ref]
+        if exclude_paths:
+            args.extend(["--", "."])
+            args.extend(f":(exclude){path}" for path in exclude_paths if path)
+        return self.git_output_bytes(self._repo_root, *args)
 
     def apply_patch(self, worktree_path: Path, patch: bytes) -> None:
         if not patch.strip():
@@ -184,22 +164,3 @@ class GitWorkspaceManager:
             stderr = completed.stderr.strip() or completed.stdout.strip()
             raise ExperimentOrchestratorError(f"git {' '.join(args)} failed: {stderr}")
 
-    def run_git_with_input(self, cwd: Path, input_text: str, *args: str) -> None:
-        completed = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            text=True,
-            input=input_text,
-            capture_output=True,
-        )
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip() or completed.stdout.strip()
-            raise ExperimentOrchestratorError(f"git {' '.join(args)} failed: {stderr}")
-
-    def _normalize_sparse_pattern(self, pattern: str) -> str:
-        normalized = pattern.replace("\\", "/").strip()
-        if not normalized:
-            return normalized
-        if normalized == ".":
-            return normalized
-        return normalized.strip("/")

@@ -3,7 +3,7 @@
 1. Use `uv run` to run any python file
 2. Use `uv add` to add any python dependencies
 3. You are not required to create any unit tests
-4. If you need to run `uv run Main.py` ask user to run it as it is taking a long time to run. 
+4. If you need to run `uv run Main.py` ask user to run it as it is taking a long time to run, unless user explicitly ask you to run
 
 ## Source Map
 
@@ -18,9 +18,9 @@ Update it when adding, removing, renaming, or moving core modules.
 
 ### Core Orchestration
 - `src/Orchestration/ExperimentOrchestrator.py`
-  - Top-level coordinator for bootstrap, iteration execution, scoring, ledger logging, and best-branch promotion.
+  - Top-level coordinator for iteration execution, hidden-eval scoring, ledger logging, and best-branch promotion.
 - `src/Orchestration/ExperimentIterationRunner.py`
-  - Single-iteration flow: create worktrees, run Codex, apply patch, evaluate, log result, and clean up.
+  - Single-iteration flow: create worktrees, run Codex, apply patch, call hidden eval, log result, and clean up.
 - `src/Orchestration/Models.py`
   - Shared dataclasses and core types, including `ExperimentRunConfig` and iteration results.
 - `src/Orchestration/RunConfigFile.py`
@@ -29,6 +29,8 @@ Update it when adding, removing, renaming, or moving core modules.
   - Git worktree, branch, patch, and commit operations.
 - `src/Orchestration/EvaluationRunner.py`
   - Runs the external evaluator and parses the score.
+- `src/Orchestration/HiddenEvalSandbox.py`
+  - Builds disposable hidden-eval sandboxes and overlays candidate patches before scoring.
 - `src/Orchestration/ExperimentLedger.py`
   - Appends and reads the JSONL experiment ledger.
 - `src/Orchestration/ExperimentVisualization.py`
@@ -38,13 +40,11 @@ Update it when adding, removing, renaming, or moving core modules.
 - `PromptTemplates.md`
   - Prompt source text used by the orchestrator.
 - `src/Orchestration/ExperimentPrompts.py`
-  - Builds the experiment prompt sent to Codex.
-- `src/Orchestration/ExperimentBootstrap.py`
-  - Generates bootstrap artifacts like `RUNNING_INSTRUCTIONS.md` and `EVALUATION_SPEC.md`.
+  - Builds the experiment prompt sent to Codex, including inline baseline and experiment-history context.
 - `src/Orchestration/ExperimentRunDocs.py`
-  - Builds per-run docs such as baseline and history context.
+  - Builds the baseline and experiment history context injected into the experiment prompt.
 - `src/Orchestration/ExperimentRunSupport.py`
-  - Helper logic for edit policy, sparse checkout patterns, cleanup, and post-run review.
+  - Helper logic for edit policy, runtime-managed environment paths, cleanup, and post-run review.
 
 ### Codex Integration
 - `src/Agents/Codex/Agent.py`
@@ -68,7 +68,9 @@ Update it when adding, removing, renaming, or moving core modules.
 - `config.toml`
   - Local run configuration created on first `uv run Main.py`.
 - `Logs/`
-  - Runtime logs, session logs, experiment ledger, progress SVGs, and temporary worktrees.
+  - Durable logs, session logs, experiment ledger, and progress SVGs.
+- `Runtime/`
+  - Temporary worktrees, hidden-eval sandboxes, and transient orchestrator runtime state.
 - `Cache/`
   - Cached generated artifacts.
 - `__pycache__/`, `.venv/`, `.pytest_cache/`

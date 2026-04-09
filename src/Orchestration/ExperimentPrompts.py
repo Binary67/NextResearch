@@ -6,36 +6,20 @@ from pathlib import Path
 from .Models import ExperimentOrchestratorError
 
 
-def build_running_instructions_prompt() -> str:
-    return _load_prompt_template("Running Instructions Prompt")
-
-
-def build_evaluation_spec_prompt(evaluation_command: str, evaluation_relative_path: str) -> str:
-    return _load_prompt_template("Evaluation Spec Prompt").format(
-        evaluation_command=evaluation_command,
-        evaluation_relative_path=evaluation_relative_path,
-    )
-
-
-def build_experiment_prompt(objective_name: str, agent_eval_budget: int, eval_tool_name: str = "orchestrator_run_eval") -> str:
+def build_experiment_prompt(
+    objective_name: str,
+    agent_eval_budget: int,
+    baseline_state: str,
+    experiment_history: str,
+    eval_tool_name: str = "orchestrator_run_eval",
+) -> str:
     return _load_prompt_template("Experiment Prompt").format(
         objective_name=objective_name,
         agent_eval_budget=agent_eval_budget,
         eval_tool_name=eval_tool_name,
-        running_instructions_path=".nextresearch/RUNNING_INSTRUCTIONS.md",
-        evaluation_spec_path=".nextresearch/EVALUATION_SPEC.md",
-        baseline_state_path=".nextresearch/BASELINE_STATE.md",
-        experiment_history_path=".nextresearch/EXPERIMENT_HISTORY.md",
+        baseline_state=baseline_state.strip(),
+        experiment_history=experiment_history.strip(),
     )
-
-
-def normalize_document_text(value: str) -> str:
-    text = value.strip()
-    if text.startswith("```") and text.endswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
-    return text + "\n"
 
 
 def _load_prompt_template(section_title: str) -> str:
@@ -44,11 +28,7 @@ def _load_prompt_template(section_title: str) -> str:
         raise ExperimentOrchestratorError(f"Prompt templates file not found: {prompt_templates_path}")
 
     content = prompt_templates_path.read_text(encoding="utf-8")
-    required_sections = (
-        "Running Instructions Prompt",
-        "Evaluation Spec Prompt",
-        "Experiment Prompt",
-    )
+    required_sections = ("Experiment Prompt",)
     heading_matches: list[tuple[int, int, str]] = []
 
     for title in required_sections:

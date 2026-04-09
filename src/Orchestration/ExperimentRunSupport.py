@@ -11,23 +11,13 @@ from .GitWorkspace import GitWorkspaceManager
 from .Models import ExperimentOrchestratorError
 
 
-def write_run_docs(docs_dir: Path, documents: dict[str, str]) -> None:
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    for name, content in documents.items():
-        (docs_dir / name).write_text(content, encoding="utf-8")
-
-
-def remove_run_docs(docs_dir: Path) -> None:
-    if docs_dir.exists():
-        shutil.rmtree(docs_dir)
-
-
 def cleanup_experiment_workspaces(
     workspace: GitWorkspaceManager,
     orchestrator_worktree_path: Path,
     agent_worktree_path: Path,
     branch_name: str,
     preserve_branch: bool = False,
+    extra_paths: tuple[Path, ...] = (),
 ) -> None:
     try:
         workspace.remove_worktree(agent_worktree_path)
@@ -35,19 +25,18 @@ def cleanup_experiment_workspaces(
         try:
             workspace.remove_worktree(orchestrator_worktree_path)
         finally:
-            if not preserve_branch:
-                workspace.delete_branch(branch_name)
+            try:
+                for path in extra_paths:
+                    if path.exists():
+                        shutil.rmtree(path)
+            finally:
+                if not preserve_branch:
+                    workspace.delete_branch(branch_name)
 
 
 def print_edit_policy(edit_policy: EditPolicy) -> None:
-    editable_text = ", ".join(edit_policy.editable_rule_paths()) or "all repo paths"
-    non_editable_text = ", ".join(edit_policy.non_editable_rule_paths()) or "none"
-    non_readable_text = ", ".join(edit_policy.non_readable_rule_paths()) or "none"
-    print(f"Codex edit policy repo_root={edit_policy.repo_root}")
-    print(f"Codex edit policy mode={edit_policy.mode_label}")
-    print(f"Codex editable_paths={editable_text}")
-    print(f"Codex non_editable_paths={non_editable_text}")
-    print(f"Codex non_readable_paths={non_readable_text}")
+    print(f"Codex writable scope repo_root={edit_policy.repo_root}")
+    print(f"Codex editable_paths={edit_policy.writable_scope_summary()}")
 
 
 def build_shared_target_environment(cache_root: Path) -> dict[str, str]:
@@ -57,6 +46,7 @@ def build_shared_target_environment(cache_root: Path) -> dict[str, str]:
         "PYTHONHOME",
         "PYTHONPATH",
         "CONDA_PREFIX",
+        "UV_PROJECT_ENVIRONMENT",
         "UV_CACHE_DIR",
         "UV_PYTHON",
         "UV_PYTHON_INSTALL_DIR",
@@ -71,13 +61,14 @@ def build_shared_target_environment(cache_root: Path) -> dict[str, str]:
     return environment
 
 
-def build_agent_target_environment(agent_cwd: Path) -> dict[str, str]:
+def build_agent_target_environment(runtime_root: Path) -> dict[str, str]:
     environment = os.environ.copy()
     for key in (
         "VIRTUAL_ENV",
         "PYTHONHOME",
         "PYTHONPATH",
         "CONDA_PREFIX",
+        "UV_PROJECT_ENVIRONMENT",
         "UV_CACHE_DIR",
         "UV_PYTHON",
         "UV_PYTHON_INSTALL_DIR",
@@ -86,13 +77,22 @@ def build_agent_target_environment(agent_cwd: Path) -> dict[str, str]:
     ):
         environment.pop(key, None)
 
-    uv_cache_dir = agent_cwd / ".uv-cache"
-    uv_python_install_dir = agent_cwd / ".uv-python"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    project_environment_dir = runtime_root / "project-env"
+    uv_cache_dir = runtime_root / "uv-cache"
+    uv_python_install_dir = runtime_root / "uv-python"
     uv_cache_dir.mkdir(parents=True, exist_ok=True)
     uv_python_install_dir.mkdir(parents=True, exist_ok=True)
+    environment["UV_PROJECT_ENVIRONMENT"] = str(project_environment_dir)
     environment["UV_CACHE_DIR"] = str(uv_cache_dir)
     environment["UV_PYTHON_INSTALL_DIR"] = str(uv_python_install_dir)
     environment["UV_MANAGED_PYTHON"] = "1"
+    environment["VIRTUAL_ENV"] = str(project_environment_dir)
+    existing_path = environment.get("PATH", "")
+    scripts_dir = _project_environment_scripts_dir(project_environment_dir)
+    environment["PATH"] = (
+        f"{scripts_dir}{os.pathsep}{existing_path}" if existing_path else str(scripts_dir)
+    )
     return environment
 
 
@@ -123,98 +123,31 @@ def build_edit_policy(
     worktree_path: Path,
     session_cwd: Path,
     target_relative_path: Path,
-    editable_paths: tuple[str, ...],
-    non_editable_paths: tuple[str, ...],
-    non_readable_paths: tuple[str, ...],
+    editable_paths: tuple[str, ...] = (),
 ) -> EditPolicy:
-    effective_non_editable_paths = tuple(
-        dict.fromkeys((*non_editable_paths, *orchestrator_managed_paths(target_relative_path)))
-    )
     return EditPolicy.from_paths(
         worktree_path,
         session_cwd=session_cwd,
         editable_paths=editable_paths,
-        non_editable_paths=effective_non_editable_paths,
-        non_readable_paths=non_readable_paths,
+        blocked_write_paths=(),
     )
 
 
-def build_agent_sparse_patterns(
-    workspace: GitWorkspaceManager,
-    orchestrator_worktree_path: Path,
-    edit_policy: EditPolicy,
-    target_relative_path: Path,
-) -> list[str]:
-    patterns = [
-        path
-        for path in workspace.list_tracked_paths(orchestrator_worktree_path)
-        if edit_policy.evaluate_read_path(orchestrator_worktree_path / path).allowed
-    ]
-    for managed_path in orchestrator_managed_paths(target_relative_path):
-        if managed_path not in patterns:
-            patterns.append(managed_path)
-    return patterns
+def excluded_candidate_patch_paths(target_relative_path: Path) -> tuple[str, ...]:
+    return candidate_runtime_artifact_paths(target_relative_path)
 
 
-def blocked_commands_for_run(evaluation_command: str, non_readable_paths: tuple[str, ...]) -> tuple[str, ...]:
-    blocked_commands: list[str] = [evaluation_command]
-    for path in non_readable_paths:
-        stripped = path.strip()
-        if not stripped:
-            continue
-        blocked_commands.append(stripped)
-        name = Path(stripped).name
-        if name and name != stripped:
-            blocked_commands.append(name)
-    return tuple(dict.fromkeys(blocked_commands))
-
-
-def build_effective_non_readable_paths(
-    target_relative_path: Path,
-    evaluation_relative_path: Path,
-    non_readable_paths: tuple[str, ...],
-) -> tuple[str, ...]:
-    hidden_paths = list(non_readable_paths)
-    evaluation_repo_relative_path = _target_scoped_path(target_relative_path, evaluation_relative_path)
-    if evaluation_repo_relative_path not in hidden_paths:
-        hidden_paths.append(evaluation_repo_relative_path)
-    return tuple(hidden_paths)
-
-
-def docs_excluded_patch_paths(target_relative_path: Path) -> tuple[str, ...]:
-    return orchestrator_managed_paths(target_relative_path)
-
-
-def runtime_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
+def candidate_runtime_artifact_paths(target_relative_path: Path) -> tuple[str, ...]:
     return tuple(
-        _directory_path(_target_scoped_path(target_relative_path, Path(relative_path)))
-        for relative_path in runtime_managed_session_paths()
+        _target_scoped_path(target_relative_path, Path(relative_path))
+        for relative_path in runtime_generated_candidate_paths()
     )
 
 
-def orchestrator_managed_paths(target_relative_path: Path) -> tuple[str, ...]:
-    return runtime_managed_paths(target_relative_path)
-
-
-def runtime_managed_session_paths() -> tuple[str, ...]:
+def runtime_generated_candidate_paths() -> tuple[str, ...]:
     return (
-        ".nextresearch/",
+        "model.pkl",
     )
-
-
-def is_runtime_managed_session_path(path: str) -> bool:
-    normalized_path = _normalize_path_for_matching(path)
-    for managed_path in runtime_managed_session_paths():
-        normalized_managed_path = _normalize_path_for_matching(managed_path)
-        if normalized_path == normalized_managed_path.rstrip("/"):
-            return True
-        if normalized_path.startswith(normalized_managed_path):
-            return True
-    return False
-
-
-def is_orchestrator_managed_session_path(path: str) -> bool:
-    return is_runtime_managed_session_path(path)
 
 
 def _staged_text_paths_for_log(
@@ -263,12 +196,7 @@ def _target_scoped_path(target_relative_path: Path, relative_path: Path) -> str:
     return f"{target_prefix}/{scoped_path}"
 
 
-def _directory_path(path: str) -> str:
-    normalized = path.replace("\\", "/").strip()
-    if not normalized:
-        return normalized
-    return normalized.rstrip("/") + "/"
-
-
-def _normalize_path_for_matching(path: str) -> str:
-    return path.replace("\\", "/").strip().strip("/")
+def _project_environment_scripts_dir(project_environment_dir: Path) -> Path:
+    if os.name == "nt":
+        return project_environment_dir / "Scripts"
+    return project_environment_dir / "bin"

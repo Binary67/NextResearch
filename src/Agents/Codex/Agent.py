@@ -79,6 +79,8 @@ class _CommandLogState:
     command: str = ""
     status: str | None = None
     exit_code: int | None = None
+    duration_ms: int | None = None
+    output: str = ""
 
     def update_from_item(self, item: dict[str, Any]) -> None:
         command = item.get("command")
@@ -93,11 +95,25 @@ class _CommandLogState:
         if isinstance(exit_code, int):
             self.exit_code = exit_code
 
+        duration_ms = item.get("durationMs")
+        if isinstance(duration_ms, int):
+            self.duration_ms = duration_ms
+
+        aggregated_output = item.get("aggregatedOutput")
+        if isinstance(aggregated_output, str) and aggregated_output:
+            self.output = aggregated_output
+
+    def append_output(self, value: str) -> None:
+        if value:
+            self.output += value
+
     def to_entry(self) -> CommandLogEntry:
         return CommandLogEntry(
             command=self.command or "(unknown command)",
             status=self.status,
             exit_code=self.exit_code,
+            duration_ms=self.duration_ms,
+            output=self.output,
         )
 
 
@@ -361,25 +377,9 @@ class CodexAgent:
         self._thread_id = self._extract_thread_id_from_session_result(result, "thread/start")
         self._session_log.append_session_started(self._thread_id, normalized_cwd)
         if self._edit_policy is not None:
-            runtime_managed_paths: list[str] = []
-            if normalized_cwd is not None:
-                try:
-                    from src.Orchestration.ExperimentRunSupport import runtime_managed_session_paths
-
-                    runtime_managed_paths = list(runtime_managed_session_paths())
-                except Exception:
-                    runtime_managed_paths = []
-            self._session_log.append_edit_policy(
+            self._session_log.append_writable_scope(
                 self._thread_id,
-                self._edit_policy.mode_label,
                 list(self._edit_policy.editable_rule_paths()),
-                [
-                    path
-                    for path in self._edit_policy.non_editable_rule_paths()
-                    if path not in runtime_managed_paths
-                ],
-                list(self._edit_policy.non_readable_rule_paths()),
-                runtime_managed_paths=runtime_managed_paths,
             )
         if self._dynamic_tools:
             self._session_log.append_dynamic_tool_registration(
@@ -534,6 +534,13 @@ class CodexAgent:
                     output_text = self._extract_delta_text(params)
                     if isinstance(item_id, str) and output_text:
                         collector.file_change_state(item_id).append_output(output_text)
+                    continue
+
+                if method == "item/commandExecution/outputDelta":
+                    item_id = params.get("itemId")
+                    output_text = self._extract_delta_text(params)
+                    if isinstance(item_id, str) and output_text:
+                        collector.command_state(item_id).append_output(output_text)
                     continue
 
                 if method == "item/completed":
@@ -737,18 +744,11 @@ class CodexAgent:
         return "\n".join(values).strip()
 
     def _build_thread_start_params(self, normalized_cwd: str | None) -> dict[str, Any]:
-        if self._edit_policy is None:
-            params: dict[str, Any] = {
-                "approvalPolicy": "never",
-                "cwd": normalized_cwd,
-                "sandbox": "danger-full-access",
-            }
-        else:
-            params = {
-                "approvalPolicy": "on-request",
-                "cwd": normalized_cwd,
-                "sandbox": "workspace-write",
-            }
+        params: dict[str, Any] = {
+            "approvalPolicy": "on-request",
+            "cwd": normalized_cwd,
+            "sandbox": "workspace-write",
+        }
         if self._dynamic_tools:
             params["dynamicTools"] = [tool.to_thread_start_dict() for tool in self._dynamic_tools]
         return params
@@ -834,7 +834,9 @@ class CodexAgent:
                         continue
                     decision = self._edit_policy.evaluate_read_path(value)
                     if decision.allowed:
-                        granted_read.append(str(Path(value).expanduser().resolve(strict=False)))
+                        resolved = self._edit_policy.resolve_path(value)
+                        if resolved is not None:
+                            granted_read.append(str(resolved))
                     else:
                         self._record_policy_denial(decision.display_path, decision.reason, collector)
                 if granted_read:
@@ -848,7 +850,9 @@ class CodexAgent:
                         continue
                     decision = self._edit_policy.evaluate_write_path(value)
                     if decision.allowed:
-                        granted_write.append(str(Path(value).expanduser().resolve(strict=False)))
+                        resolved = self._edit_policy.resolve_path(value)
+                        if resolved is not None:
+                            granted_write.append(str(resolved))
                     else:
                         self._record_policy_denial(decision.display_path, decision.reason, collector)
                 if granted_write:

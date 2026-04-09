@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .Models import BootstrapArtifacts, ExperimentRunConfig
+from .Models import ExperimentRunConfig
 
 
 def build_run_docs(
     config: ExperimentRunConfig,
     target_repo_path: Path,
-    bootstrap_artifacts: BootstrapArtifacts,
     current_base_ref: str,
     current_base_commit: str,
     best_branch_name: str,
@@ -21,8 +20,6 @@ def build_run_docs(
         config=config,
     )
     return {
-        "RUNNING_INSTRUCTIONS.md": bootstrap_artifacts.running_instructions,
-        "EVALUATION_SPEC.md": bootstrap_artifacts.evaluation_spec,
         "BASELINE_STATE.md": build_baseline_state_document(
             objective_name=config.objective_name,
             optimization_direction=config.optimization_direction,
@@ -49,7 +46,7 @@ def load_comparable_entries(
         if (
             str(entry.get("target_repo_path")) != str(target_repo_path)
             or str(entry.get("objective_name")) != config.objective_name
-            or str(entry.get("evaluation_command")) != config.evaluation_command
+            or str(entry.get("evaluation_key")) != config.evaluation_key
             or str(entry.get("optimization_direction")) != config.optimization_direction
         ):
             continue
