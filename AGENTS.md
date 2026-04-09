@@ -3,7 +3,7 @@
 1. Use `uv run` to run any python file
 2. Use `uv add` to add any python dependencies
 3. You are not required to create any unit tests
-4. If you need to run `uv run Main.py` ask user to run it as it is taking a long time to run. 
+4. If you need to run `uv run Main.py` ask user to run it as it is taking a long time to run, unless user explicitly ask you to run
 
 ## Source Map
 
@@ -40,11 +40,11 @@ Update it when adding, removing, renaming, or moving core modules.
 - `PromptTemplates.md`
   - Prompt source text used by the orchestrator.
 - `src/Orchestration/ExperimentPrompts.py`
-  - Builds the experiment prompt sent to Codex.
+  - Builds the experiment prompt sent to Codex, including inline baseline and experiment-history context.
 - `src/Orchestration/ExperimentRunDocs.py`
-  - Builds per-run docs such as baseline and experiment history context.
+  - Builds the baseline and experiment history context injected into the experiment prompt.
 - `src/Orchestration/ExperimentRunSupport.py`
-  - Helper logic for edit policy, runtime-managed docs, cleanup, and post-run review.
+  - Helper logic for edit policy, runtime-managed environment paths, cleanup, and post-run review.
 
 ### Codex Integration
 - `src/Agents/Codex/Agent.py`
@@ -68,7 +68,9 @@ Update it when adding, removing, renaming, or moving core modules.
 - `config.toml`
   - Local run configuration created on first `uv run Main.py`.
 - `Logs/`
-  - Runtime logs, session logs, experiment ledger, progress SVGs, and temporary worktrees.
+  - Durable logs, session logs, experiment ledger, and progress SVGs.
+- `Runtime/`
+  - Temporary worktrees, hidden-eval sandboxes, and transient orchestrator runtime state.
 - `Cache/`
   - Cached generated artifacts.
 - `__pycache__/`, `.venv/`, `.pytest_cache/`

@@ -28,10 +28,8 @@ from .ExperimentRunSupport import (
     build_agent_target_environment,
     build_edit_policy,
     cleanup_experiment_workspaces,
-    docs_excluded_patch_paths,
+    excluded_candidate_patch_paths,
     print_edit_policy,
-    remove_run_docs,
-    write_run_docs,
 )
 from .GitWorkspace import GitWorkspaceManager
 from .HiddenEvalSandbox import prepare_hidden_eval_sandbox
@@ -52,7 +50,8 @@ def score_reference(
     evaluation_runner: EvaluationRunner,
     environment: Mapping[str, str],
 ) -> float:
-    sandbox_path = worktrees_root / objective_slug / score_id / "hidden-eval"
+    score_root = worktrees_root / objective_slug / score_id
+    sandbox_path = score_root / "runtime" / "hidden-eval"
     try:
         reference_patch = b""
         if workspace.rev_parse(ref) != workspace.rev_parse(evaluation_base_ref):
@@ -71,8 +70,8 @@ def score_reference(
         )
         return evaluation_runner.run(sandbox_path, hidden_eval_command, environment=eval_environment).score
     finally:
-        if sandbox_path.exists():
-            shutil.rmtree(sandbox_path)
+        if score_root.exists():
+            shutil.rmtree(score_root)
 
 
 def run_iteration(
@@ -100,9 +99,10 @@ def run_iteration(
     run_root = worktrees_root / objective_slug / run_id
     orchestrator_worktree_path = run_root / "orchestrator"
     agent_worktree_path = run_root / "agent"
-    hidden_eval_sandbox_path = run_root / "hidden-eval"
+    runtime_root = run_root / "runtime"
+    agent_runtime_path = runtime_root / "agent"
+    hidden_eval_sandbox_path = runtime_root / "hidden-eval"
     agent_cwd = agent_worktree_path / target_relative_path
-    docs_dir = agent_cwd / ".nextresearch"
     score: float | None = None
     score_delta: float | None = None
     improved = False
@@ -127,19 +127,16 @@ def run_iteration(
             current_base_commit,
         )
         agent_cwd.mkdir(parents=True, exist_ok=True)
-        agent_environment = build_agent_target_environment(agent_cwd)
+        agent_environment = build_agent_target_environment(agent_runtime_path)
         _bootstrap_agent_environment(agent_cwd, agent_environment, target_environment)
-        write_run_docs(
-            docs_dir,
-            build_run_docs(
-                config=config,
-                target_repo_path=target_path,
-                current_base_ref=current_base_ref,
-                current_base_commit=current_base_commit,
-                best_branch_name=best_branch_name,
-                best_score=best_score,
-                ledger_entries=ledger.load_entries(),
-            ),
+        run_documents = build_run_docs(
+            config=config,
+            target_repo_path=target_path,
+            current_base_ref=current_base_ref,
+            current_base_commit=current_base_commit,
+            best_branch_name=best_branch_name,
+            best_score=best_score,
+            ledger_entries=ledger.load_entries(),
         )
         agent_edit_policy = build_edit_policy(
             agent_worktree_path,
@@ -164,11 +161,17 @@ def run_iteration(
             evaluation_runner=evaluation_runner,
             environment=target_environment,
             budget=config.agent_eval_budget,
-            excluded_patch_paths=docs_excluded_patch_paths(target_relative_path),
+            excluded_patch_paths=excluded_candidate_patch_paths(target_relative_path),
         )
         session_result = codex_session_runner.run(
             agent_cwd,
-            _build_experiment_instruction(config.objective_name, config.agent_eval_budget, agent_edit_policy),
+            _build_experiment_instruction(
+                config.objective_name,
+                config.agent_eval_budget,
+                run_documents["BASELINE_STATE.md"],
+                run_documents["EXPERIMENT_HISTORY.md"],
+                agent_edit_policy,
+            ),
             edit_policy=agent_edit_policy,
             environment=agent_environment,
             dynamic_tools=(_build_eval_dynamic_tool(eval_tool),),
@@ -179,7 +182,6 @@ def run_iteration(
         changed_files = _build_changed_files(session_result.turn_result.file_changes)
         run_notes = tuple(session_result.turn_result.errors_and_recoveries)
         app_server_file_changes = len(session_result.turn_result.file_changes)
-        remove_run_docs(docs_dir)
         final_evaluation = eval_tool.finalize_candidate()
         score = final_evaluation.score
         evaluation_stdout = final_evaluation.stdout
@@ -212,8 +214,6 @@ def run_iteration(
             response_text = str(exc)
         if not evaluation_stderr:
             evaluation_stderr = str(exc)
-    finally:
-        remove_run_docs(docs_dir)
 
     if session_log_path is not None:
         try:
@@ -289,7 +289,7 @@ def run_iteration(
             agent_worktree_path,
             branch_name,
             preserve_branch=preserve_branch,
-            extra_paths=(hidden_eval_sandbox_path,),
+            extra_paths=(run_root,),
         )
     return result
 
@@ -313,9 +313,16 @@ def _score_delta(score: float, best_score: float, optimization_direction: str) -
 def _build_experiment_instruction(
     objective_name: str,
     agent_eval_budget: int,
+    baseline_state: str,
+    experiment_history: str,
     edit_policy: EditPolicy,
 ) -> str:
-    prompt = build_experiment_prompt(objective_name=objective_name, agent_eval_budget=agent_eval_budget)
+    prompt = build_experiment_prompt(
+        objective_name=objective_name,
+        agent_eval_budget=agent_eval_budget,
+        baseline_state=baseline_state,
+        experiment_history=experiment_history,
+    )
     prefix = edit_policy.prompt_prefix()
     if not prefix:
         return prompt
@@ -407,9 +414,9 @@ def _bootstrap_agent_environment(
     environment: Mapping[str, str],
     shared_environment: Mapping[str, str],
 ) -> None:
-    venv_path = agent_cwd / ".venv"
-    if venv_path.exists():
-        shutil.rmtree(venv_path)
+    project_environment_path = _project_environment_path(environment, agent_cwd)
+    if project_environment_path.exists():
+        shutil.rmtree(project_environment_path)
 
     bootstrap_environment = dict(environment)
     _seed_agent_python_install(agent_cwd, bootstrap_environment, shared_environment)
@@ -460,7 +467,8 @@ def _seed_agent_python_install(
             destination_dir = shared_python_root / source_dir.name
             if destination_dir.exists():
                 continue
-            shutil.copytree(source_dir, destination_dir)
+            if not _seed_python_tree(source_dir, destination_dir):
+                continue
 
     candidates = _managed_python_dirs(shared_python_root)
     if not candidates:
@@ -469,7 +477,8 @@ def _seed_agent_python_install(
     selected_dir = candidates[-1]
     local_destination = local_install_root / selected_dir.name
     if not local_destination.exists():
-        shutil.copytree(selected_dir, local_destination)
+        if not _seed_python_tree(selected_dir, local_destination):
+            return
 
     bootstrap_environment["UV_PYTHON"] = _python_version_from_dir_name(selected_dir.name)
 
@@ -515,3 +524,39 @@ def _python_version_from_dir_name(name: str) -> str:
         raise ExperimentOrchestratorError(f"Unexpected managed Python directory name: {name}")
     major, minor, patch = version
     return f"{major}.{minor}.{patch}"
+
+
+def _seed_python_tree(source_dir: Path, destination_dir: Path) -> bool:
+    try:
+        shutil.copytree(
+            source_dir,
+            destination_dir,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
+        return True
+    except FileNotFoundError:
+        if destination_dir.exists():
+            shutil.rmtree(destination_dir, ignore_errors=True)
+        return False
+    except shutil.Error as exc:
+        if destination_dir.exists():
+            shutil.rmtree(destination_dir, ignore_errors=True)
+        if _copytree_only_missing_paths(exc):
+            return False
+        raise
+
+
+def _copytree_only_missing_paths(error: shutil.Error) -> bool:
+    missing_markers = ("[WinError 3]", "No such file or directory")
+    for source, destination, message in error.args[0]:
+        _ = source, destination
+        if not any(marker in message for marker in missing_markers):
+            return False
+    return True
+
+
+def _project_environment_path(environment: Mapping[str, str], agent_cwd: Path) -> Path:
+    project_environment_value = environment.get("UV_PROJECT_ENVIRONMENT")
+    if project_environment_value:
+        return Path(project_environment_value)
+    return agent_cwd / ".venv"

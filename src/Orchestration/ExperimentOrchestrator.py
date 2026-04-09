@@ -37,7 +37,9 @@ class ExperimentOrchestrator:
         self._logs_root.mkdir(parents=True, exist_ok=True)
         self._cache_root = self._default_cache_root()
         self._cache_root.mkdir(parents=True, exist_ok=True)
-        self._worktrees_root = Path(worktrees_root) if worktrees_root is not None else self._logs_root / "Worktrees"
+        self._runtime_root = self._default_runtime_root()
+        self._runtime_root.mkdir(parents=True, exist_ok=True)
+        self._worktrees_root = Path(worktrees_root) if worktrees_root is not None else self._runtime_root / "Worktrees"
         self._worktrees_root.mkdir(parents=True, exist_ok=True)
         self._ledger = ExperimentLedger(self._logs_root / "codex_experiments.jsonl")
         self._evaluation_runner = EvaluationRunner()
@@ -54,6 +56,10 @@ class ExperimentOrchestrator:
     @property
     def worktrees_root(self) -> Path:
         return self._worktrees_root
+
+    @property
+    def runtime_root(self) -> Path:
+        return self._runtime_root
 
     @property
     def ledger_path(self) -> Path:
@@ -190,3 +196,6 @@ class ExperimentOrchestrator:
 
     def _default_cache_root(self) -> Path:
         return Path(__file__).resolve().parents[2] / "Cache"
+
+    def _default_runtime_root(self) -> Path:
+        return Path(__file__).resolve().parents[2] / "Runtime"

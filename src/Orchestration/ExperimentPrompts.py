@@ -6,13 +6,19 @@ from pathlib import Path
 from .Models import ExperimentOrchestratorError
 
 
-def build_experiment_prompt(objective_name: str, agent_eval_budget: int, eval_tool_name: str = "orchestrator_run_eval") -> str:
+def build_experiment_prompt(
+    objective_name: str,
+    agent_eval_budget: int,
+    baseline_state: str,
+    experiment_history: str,
+    eval_tool_name: str = "orchestrator_run_eval",
+) -> str:
     return _load_prompt_template("Experiment Prompt").format(
         objective_name=objective_name,
         agent_eval_budget=agent_eval_budget,
         eval_tool_name=eval_tool_name,
-        baseline_state_path=".nextresearch/BASELINE_STATE.md",
-        experiment_history_path=".nextresearch/EXPERIMENT_HISTORY.md",
+        baseline_state=baseline_state.strip(),
+        experiment_history=experiment_history.strip(),
     )
 
 

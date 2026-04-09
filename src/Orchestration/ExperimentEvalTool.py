@@ -145,10 +145,11 @@ class ExperimentEvalTool:
             )
 
         snapshot = self.sync_current_candidate()
-        self._budget_remaining -= 1
 
         evaluation = self._evaluate_snapshot(snapshot)
         self._last_evaluation = evaluation
+        if self._evaluation_consumes_budget(evaluation):
+            self._budget_remaining -= 1
         if evaluation.failure_message is not None:
             return ToolEvaluationResponse(
                 status="evaluation_failed",
@@ -362,9 +363,14 @@ class ExperimentEvalTool:
                 return "Candidate improved relative to the current best score."
         return "Candidate evaluated successfully but did not beat the current best score."
 
+    def _evaluation_consumes_budget(self, evaluation: CachedEvaluationResult) -> bool:
+        if evaluation.failure_message is None:
+            return True
+        return not evaluation.failure_message.startswith("Patch application failed")
+
     def _sanitize_failure_message(self, message: str) -> str:
         if message.startswith("Patch application failed"):
-            return "Evaluation failed because the candidate included runtime-generated file changes."
+            return "Candidate could not be evaluated because its patch could not be applied cleanly."
         if message.startswith("Evaluation command failed"):
             return "Evaluation failed due to a runtime error."
         if "must print a numeric score" in message or "did not print a score" in message:
