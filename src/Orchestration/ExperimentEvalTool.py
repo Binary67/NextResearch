@@ -66,7 +66,6 @@ class RetainedCandidate:
     score: float
     stdout: str
     stderr: str
-    improved_relative_to_best: bool
 
 
 @dataclass(frozen=True)
@@ -76,7 +75,6 @@ class FinalCandidateEvaluation:
     stdout: str
     stderr: str
     failure_message: str | None
-    reused_cached_result: bool
     retained_modified_candidate: bool
 
 
@@ -203,8 +201,6 @@ class ExperimentEvalTool:
                 stdout=retained_candidate.stdout,
                 stderr=retained_candidate.stderr,
                 failure_message=None,
-                reused_cached_result=reused_current_result
-                and retained_candidate.snapshot.fingerprint == current_snapshot.fingerprint,
                 retained_modified_candidate=True,
             )
 
@@ -216,12 +212,11 @@ class ExperimentEvalTool:
                 stdout=current_evaluation.stdout,
                 stderr=current_evaluation.stderr,
                 failure_message=None,
-                reused_cached_result=reused_current_result,
                 retained_modified_candidate=False,
             )
 
         baseline_snapshot = self._baseline_snapshot
-        baseline_evaluation, reused_baseline_result = self._evaluate_if_needed(baseline_snapshot)
+        baseline_evaluation, _ = self._evaluate_if_needed(baseline_snapshot)
         self._last_evaluation = baseline_evaluation
         self._sync_snapshot(baseline_snapshot)
         return FinalCandidateEvaluation(
@@ -230,7 +225,6 @@ class ExperimentEvalTool:
             stdout=baseline_evaluation.stdout,
             stderr=baseline_evaluation.stderr,
             failure_message=baseline_evaluation.failure_message,
-            reused_cached_result=reused_baseline_result,
             retained_modified_candidate=False,
         )
 
@@ -337,7 +331,6 @@ class ExperimentEvalTool:
             score=score,
             stdout=stdout,
             stderr=stderr,
-            improved_relative_to_best=self._is_better_score(score, self._best_score),
         )
 
     def _score_delta(self, score: float, reference: float) -> float:

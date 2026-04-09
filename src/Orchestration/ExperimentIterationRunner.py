@@ -141,7 +141,6 @@ def run_iteration(
         agent_edit_policy = build_edit_policy(
             agent_worktree_path,
             agent_cwd,
-            target_relative_path,
             editable_paths=config.editable_paths,
         )
         print_edit_policy(agent_edit_policy)
@@ -419,7 +418,7 @@ def _bootstrap_agent_environment(
         shutil.rmtree(project_environment_path)
 
     bootstrap_environment = dict(environment)
-    _seed_agent_python_install(agent_cwd, bootstrap_environment, shared_environment)
+    _seed_agent_python_install(bootstrap_environment, shared_environment)
 
     completed = subprocess.run(
         ["uv", "sync", "--frozen"],
@@ -442,7 +441,6 @@ def _bootstrap_agent_environment(
 
 
 def _seed_agent_python_install(
-    agent_cwd: Path,
     bootstrap_environment: dict[str, str],
     shared_environment: Mapping[str, str],
 ) -> None:

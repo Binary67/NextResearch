@@ -122,7 +122,6 @@ def append_post_run_review(
 def build_edit_policy(
     worktree_path: Path,
     session_cwd: Path,
-    target_relative_path: Path,
     editable_paths: tuple[str, ...] = (),
 ) -> EditPolicy:
     return EditPolicy.from_paths(
