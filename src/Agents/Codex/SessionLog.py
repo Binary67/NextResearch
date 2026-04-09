@@ -93,7 +93,11 @@ class CodexSessionLog:
         ]
         if command.duration_ms is not None:
             sections.append(self._single_line_section("Command Duration Ms", str(command.duration_ms)))
-        if command.output.strip():
+        command_failed = (
+            command.status in {"failed", "declined"}
+            or (command.exit_code is not None and command.exit_code != 0)
+        )
+        if command_failed and command.output.strip():
             sections.append(self._multi_line_section("Command Output", command.output))
 
         return self._append_sections(self.path_for_thread(thread_id), sections)
